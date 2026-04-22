@@ -1,0 +1,135 @@
+/** POST /api/ai-brief
+ *
+ *  Generates a NOC shift-change briefing from the live scan + active
+ *  hazards.  Powered by Azure OpenAI gpt-5-mini.  Pulls fresh context
+ *  from the OWL backend and AWC right before generation, so the brief
+ *  reflects the actual state at request time.
+ *
+ *  Body shape (optional): {focus?: string} — narrow to a region, e.g.
+ *  "northeast US" or "Hawaii".
+ */
+
+import { NextResponse } from "next/server";
+import { chat } from "@/lib/openai";
+import { OWL_API_BASE } from "@/lib/api";
+import { trackEvent, trackMetric } from "@/lib/telemetry";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+interface ScanRow {
+  station: string;
+  status?: string;
+  minutes_since_last_report?: number | null;
+  probable_reason?: string | null;
+}
+
+interface AirSigmet {
+  hazard?: string;
+  airSigmetType?: string;
+  rawAirSigmet?: string;
+  validTimeFrom?: string;
+  validTimeTo?: string;
+}
+
+export async function POST(req: Request) {
+  const t0 = Date.now();
+  let focus: string | undefined;
+  try {
+    const body = (await req.json().catch(() => ({}))) as { focus?: string };
+    focus = body.focus;
+  } catch { /* empty body OK */ }
+
+  // Pull live context in parallel: scan results + active SIGMETs.
+  const [scanRows, sigmets] = await Promise.all([
+    fetch(`${OWL_API_BASE}/api/scan-results`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => (d?.rows as ScanRow[]) || [])
+      .catch(() => [] as ScanRow[]),
+    fetch("https://aviationweather.gov/api/data/airsigmet?format=json", {
+      signal: AbortSignal.timeout(8_000),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => (Array.isArray(d) ? d : [] as AirSigmet[]))
+      .catch(() => [] as AirSigmet[]),
+  ]);
+
+  // Tally per-status counts.
+  const counts: Record<string, number> = {};
+  for (const r of scanRows) {
+    const s = (r.status || "NO DATA").toUpperCase();
+    counts[s] = (counts[s] || 0) + 1;
+  }
+
+  // Top problem stations (worst-first).
+  const order = ["MISSING", "FLAGGED", "INTERMITTENT"];
+  const topProblems = scanRows
+    .filter((r) => order.includes((r.status || "").toUpperCase()))
+    .sort((a, b) => {
+      const oa = order.indexOf((a.status || "").toUpperCase());
+      const ob = order.indexOf((b.status || "").toUpperCase());
+      if (oa !== ob) return oa - ob;
+      return (a.minutes_since_last_report ?? 1e9) - (b.minutes_since_last_report ?? 1e9);
+    })
+    .slice(0, 25);
+
+  // Hazard summary.
+  const hazardCounts = new Map<string, number>();
+  for (const h of sigmets) {
+    const k = h.hazard || "OTHER";
+    hazardCounts.set(k, (hazardCounts.get(k) || 0) + 1);
+  }
+
+  const sysPrompt =
+    "You are an ASOS network operations briefer for the NOAA / FAA Automated " +
+    "Surface Observing System.  Write a concise NOC shift-change briefing " +
+    "in 3 short paragraphs:\n" +
+    "  1. NETWORK HEALTH (one paragraph): overall posture from the status counts.\n" +
+    "  2. STATIONS NEEDING ATTENTION (one paragraph): cite the top 5 worst by ICAO with the probable_reason.\n" +
+    "  3. AVIATION HAZARDS (one paragraph): summarise the active SIGMETs/AIRMETs by hazard type and urgency.\n" +
+    "Be precise and operational.  Use ICAO IDs verbatim.  No marketing language. " +
+    "Reference data freshness if it's stale.";
+
+  const userMsg =
+    `Region focus: ${focus || "all (CONUS + AK + HI + PR/USVI)"}.\n\n` +
+    `STATUS COUNTS:\n${JSON.stringify(counts)}\n\n` +
+    `TOP PROBLEM STATIONS (worst first):\n` +
+    topProblems
+      .map(
+        (r) =>
+          `  ${r.station} ${r.status} ${r.minutes_since_last_report ?? "?"}min ${r.probable_reason || ""}`,
+      )
+      .join("\n") + "\n\n" +
+    `ACTIVE HAZARDS (${sigmets.length}):\n` +
+    Array.from(hazardCounts.entries())
+      .map(([h, n]) => `  ${h}: ${n}`)
+      .join("\n");
+
+  const text = await chat(
+    [
+      { role: "system", content: sysPrompt },
+      { role: "user", content: userMsg },
+    ],
+    { maxTokens: 3000, reasoningEffort: "low" },
+  );
+
+  const dt = Date.now() - t0;
+  trackMetric("owl.ai_brief.duration_ms", dt);
+  trackEvent("owl.ai_brief.generated", {
+    focus: focus || "all",
+    scan_rows: scanRows.length,
+    sigmets: sigmets.length,
+    duration_ms: dt,
+  });
+
+  return NextResponse.json({
+    ok: true,
+    text,
+    context: {
+      scan_row_count: scanRows.length,
+      sigmet_count: sigmets.length,
+      counts,
+    },
+    duration_ms: dt,
+  });
+}

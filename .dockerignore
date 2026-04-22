@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+.github
+.vercel
+.env*.local
+*.log
+README.md
+.DS_Store
+.turbo
