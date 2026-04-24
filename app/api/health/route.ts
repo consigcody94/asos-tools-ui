@@ -23,7 +23,8 @@ export async function GET() {
       now: new Date().toISOString(),
       scan_in_flight: false,
       status_counts: {
-        CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0, "NO DATA": 0,
+        CLEAN: 0, FLAGGED: 0, MISSING: 0, OFFLINE: 0,
+        INTERMITTENT: 0, RECOVERED: 0, "NO DATA": 0,
       },
       last_tick_at: null,
       last_tick_ok: false,
@@ -36,7 +37,11 @@ export async function GET() {
     });
   }
 
-  const missingRate = (scan.counts.MISSING + scan.counts["NO DATA"]) / Math.max(1, scan.total);
+  // "degraded" when actively-problematic states (MISSING, NO DATA) exceed
+  // 30% of the network. OFFLINE stations don't count — those are
+  // expected/decommissioned, not a health problem.
+  const activeTotal = Math.max(1, scan.total - scan.counts.OFFLINE);
+  const missingRate = (scan.counts.MISSING + scan.counts["NO DATA"]) / activeTotal;
   const status = missingRate > 0.30 ? "degraded" : "ok";
 
   return NextResponse.json({

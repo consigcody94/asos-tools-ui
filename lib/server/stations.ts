@@ -76,6 +76,9 @@ export function allAsosStations(): AomcStation[] {
       const lat = toNumberOrNull(r.lat ?? r.latitude);
       const lon = toNumberOrNull(r.lon ?? r.longitude);
       if (!id || lat === null || lon === null) return null;
+      const archive_end_raw = r.archive_end;
+      const archive_end = archive_end_raw == null || archive_end_raw === "" ?
+        null : String(archive_end_raw);
       return {
         id,
         name: String(r.name ?? ""),
@@ -84,6 +87,7 @@ export function allAsosStations(): AomcStation[] {
         lon,
         elevation_m: toNumberOrNull(r.elevation ?? r.elevation_m),
         network: String(r.network ?? ""),
+        archive_end,
       } as AomcStation;
     })
     .filter(Boolean) as AomcStation[];

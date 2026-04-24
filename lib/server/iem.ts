@@ -37,17 +37,52 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
     direct: "no",
     report_type: ["3", "4"],
   };
-  const text = await fetchText(`${IEM_BASE}/cgi-bin/request/asos.py`, {
-    query, timeoutMs: 60_000, retries: 6,
-  });
-  if (!text) {
-    console.warn(`[iem] batch of ${stations.length} returned null text after retries`);
-    return [];
+
+  // IEM returns rate-limit messages as 200 OK text bodies, bypassing the
+  // fetcher's HTTP-status retry logic. Detect that pattern and retry
+  // with additional backoff up to ``IEM_TEXT_RETRIES`` times.
+  const IEM_TEXT_RETRIES = 4;
+  for (let attempt = 0; attempt < IEM_TEXT_RETRIES; attempt++) {
+    const text = await fetchText(`${IEM_BASE}/cgi-bin/request/asos.py`, {
+      query, timeoutMs: 60_000, retries: 3,
+    });
+    if (!text) {
+      console.warn(`[iem] batch of ${stations.length} got null text (attempt ${attempt + 1}/${IEM_TEXT_RETRIES})`);
+      continue;
+    }
+    if (isIemErrorBody(text)) {
+      const waitMs = 1500 * (attempt + 1);
+      console.warn(`[iem] batch got rate-limit error body (attempt ${attempt + 1}/${IEM_TEXT_RETRIES}); waiting ${waitMs}ms`);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+    return parseCsv(text);
   }
-  return parseCsv(text);
+  console.warn(`[iem] batch of ${stations.length} exhausted all retries — empty result`);
+  return [];
+}
+
+/** IEM responds to rate limiting with HTTP 200 + a text body like
+ *  "Too many requests from your IP address, slow down." — not a proper
+ *  429. We detect the error signature up front and treat it as a batch
+ *  failure so fetchText/fetchBatch can retry. */
+const IEM_ERROR_SIGNATURES = [
+  "too many requests",
+  "slow down",
+  "error code",
+  "error:",
+];
+
+function isIemErrorBody(text: string): boolean {
+  const first = text.slice(0, 300).toLowerCase();
+  return IEM_ERROR_SIGNATURES.some((sig) => first.includes(sig));
 }
 
 function parseCsv(text: string): RawMetarRow[] {
+  if (isIemErrorBody(text)) {
+    console.warn(`[iem] body looks like a rate-limit/error response; treating as empty for retry`);
+    return [];
+  }
   const lines = text.split("\n");
   const out: RawMetarRow[] = [];
   if (!lines.length) return out;
@@ -101,70 +136,157 @@ export async function fetchRecentMetars(
 //   - Latest OK but prior 4h had `$` or gap   → RECOVERED / INTERMITTENT
 //   - All METARs present + no flags           → CLEAN
 
+/** Minutes a station can be silent before we flip it from "gap but okay"
+ *  (INTERMITTENT) to MISSING. Mirrors the Python watchlist constant. */
+const MISSING_SILENCE_MIN = 120;
+
+/** Days of silence that escalate MISSING → OFFLINE (major issue / likely
+ *  decommissioned). Python's watchlist does not model this yet; OWL UI
+ *  adds it per user spec. Note: a single 4h scan cannot by itself
+ *  distinguish 4h-silent from 14d-silent — OFFLINE is only emitted when
+ *  the station catalog's ``archive_end`` is set and in the past. */
+const OFFLINE_ARCHIVE_GRACE_DAYS = 14;
+
+/** Build the set of expected HH:00 UTC bucket boundaries inside
+ *  ``[start, end]`` whose scheduled :51 METAR should already have filed. */
+function expectedHourlyBuckets(start: Date, end: Date, graceMin = 15): Set<number> {
+  const now = Date.now();
+  const effectiveEnd = Math.min(end.getTime(), now - graceMin * 60_000);
+  if (effectiveEnd <= start.getTime()) return new Set();
+  // First full hour >= start.
+  let first = new Date(Date.UTC(
+    start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(),
+    start.getUTCHours(), 0, 0, 0,
+  )).getTime();
+  if (first < start.getTime()) first += 3_600_000;
+  const out = new Set<number>();
+  for (let h = first; h + 3_600_000 <= effectiveEnd + graceMin * 60_000; h += 3_600_000) {
+    out.add(h);
+  }
+  return out;
+}
+
 function classify(
   metars: RawMetarRow[],
   now: Date,
+  expectedBuckets: Set<number>,
+  archiveEnd: string | null = null,
 ): Pick<ScanRow, "status" | "minutes_since_last_report" | "last_metar" | "last_valid" | "probable_reason"> {
-  // Empty set → station reported nothing in the 4h window we asked for.
-  // That's MISSING, not NO DATA (the latter is pre-scan-only state).
+  // Catalog-based OFFLINE: station was decommissioned before the scan window.
+  if (archiveEnd) {
+    const t = Date.parse(archiveEnd);
+    if (Number.isFinite(t) && now.getTime() - t > OFFLINE_ARCHIVE_GRACE_DAYS * 86_400_000) {
+      return {
+        status: "OFFLINE",
+        minutes_since_last_report: null,
+        last_metar: null,
+        last_valid: null,
+        probable_reason: `decommissioned — archive_end ${archiveEnd}`,
+      };
+    }
+  }
+
+  // Zero METARs in the window → MISSING (matches Python watchlist when
+  // any expected bucket existed, which is true for any 4h scan).
   if (metars.length === 0) {
     return {
       status: "MISSING",
       minutes_since_last_report: null,
       last_metar: null,
       last_valid: null,
-      probable_reason: "no METAR in the 4h scan window",
+      probable_reason: "no METAR received in scan window",
     };
   }
+
   // Sort newest-first by valid timestamp.
   const rows = [...metars].sort((a, b) => (a.valid < b.valid ? 1 : -1));
   const latest = rows[0];
   const latestTime = parseMetarTime(latest.metar, now);
-  const latestMinsAgo = latestTime
+  const minsSinceLast = latestTime
     ? Math.max(0, Math.round((now.getTime() - latestTime.getTime()) / 60000))
     : null;
 
-  const flaggedNow = hasMaintenanceFlag(latest.metar);
-  const anyFlaggedInWindow = rows.some((r) => hasMaintenanceFlag(r.metar));
+  const flaggedInWindow = rows.filter((r) => hasMaintenanceFlag(r.metar)).length;
+  const latestFlagged = hasMaintenanceFlag(latest.metar);
 
-  // MISSING: no METAR in the last 2 hours.
-  if (latestMinsAgo === null || latestMinsAgo >= 120) {
+  // Hour-bucket coverage: a bucket [HH:00, HH+1:00) is covered if any
+  // METAR or SPECI falls inside it, OR if an early report at HH:45+ files
+  // for the next bucket.
+  const covered = new Set<number>();
+  for (const r of rows) {
+    const t = parseMetarTime(r.metar, now);
+    if (!t) continue;
+    const bucket = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), t.getUTCHours());
+    if (expectedBuckets.has(bucket)) covered.add(bucket);
+    if (t.getUTCMinutes() >= 45) {
+      const adj = bucket + 3_600_000;
+      if (expectedBuckets.has(adj)) covered.add(adj);
+    }
+  }
+  let missingBucketCount = 0;
+  for (const b of expectedBuckets) if (!covered.has(b)) missingBucketCount++;
+
+  // Priority ladder — mirrors Python watchlist.build_watchlist():
+  //   1. Silent ≥ 2h           → MISSING
+  //   2. Latest $-flagged      → FLAGGED
+  //   3. No flags, no gaps     → CLEAN
+  //   4. No flags but gaps     → INTERMITTENT
+  //   5. Last two clean, no gaps → RECOVERED
+  //   6. else                   → INTERMITTENT
+
+  if (minsSinceLast === null || minsSinceLast >= MISSING_SILENCE_MIN) {
     return {
       status: "MISSING",
-      minutes_since_last_report: latestMinsAgo,
+      minutes_since_last_report: minsSinceLast,
       last_metar: latest.metar,
       last_valid: latest.valid,
-      probable_reason: `no METAR in ${latestMinsAgo ?? "?"}m`,
+      probable_reason: `silent ${minsSinceLast ?? "?"}m (≥ ${MISSING_SILENCE_MIN}m threshold)`,
     };
   }
-
-  if (flaggedNow) {
+  if (latestFlagged) {
     return {
       status: "FLAGGED",
-      minutes_since_last_report: latestMinsAgo,
+      minutes_since_last_report: minsSinceLast,
       last_metar: latest.metar,
       last_valid: latest.valid,
-      probable_reason: "maintenance-check indicator ($) set",
+      probable_reason: "maintenance-check indicator ($) set on latest METAR",
     };
   }
-
-  // INTERMITTENT: we had `$` in the window but the latest is clean.
-  if (anyFlaggedInWindow) {
+  if (flaggedInWindow === 0 && missingBucketCount === 0) {
+    return {
+      status: "CLEAN",
+      minutes_since_last_report: minsSinceLast,
+      last_metar: latest.metar,
+      last_valid: latest.valid,
+      probable_reason: null,
+    };
+  }
+  if (flaggedInWindow === 0) {
+    return {
+      status: "INTERMITTENT",
+      minutes_since_last_report: minsSinceLast,
+      last_metar: latest.metar,
+      last_valid: latest.valid,
+      probable_reason: `${missingBucketCount} hour(s) missing in scan window`,
+    };
+  }
+  // flaggedInWindow > 0 — possibly RECOVERED
+  const last2 = rows.slice(0, 2);
+  if (last2.length >= 2 && last2.every((r) => !hasMaintenanceFlag(r.metar)) && missingBucketCount === 0) {
     return {
       status: "RECOVERED",
-      minutes_since_last_report: latestMinsAgo,
+      minutes_since_last_report: minsSinceLast,
       last_metar: latest.metar,
       last_valid: latest.valid,
-      probable_reason: "earlier $-flag cleared in latest report",
+      probable_reason: "recent $-flag cleared; last two reports clean",
     };
   }
-
   return {
-    status: "CLEAN",
-    minutes_since_last_report: latestMinsAgo,
+    status: "INTERMITTENT",
+    minutes_since_last_report: minsSinceLast,
     last_metar: latest.metar,
     last_valid: latest.valid,
-    probable_reason: null,
+    probable_reason: `${flaggedInWindow} flagged + ${missingBucketCount} missing in window`,
   };
 }
 
@@ -195,9 +317,25 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
   }
 
   const now = new Date();
+  const start = new Date(now.getTime() - hoursBack * 3_600_000);
+  const expectedBuckets = expectedHourlyBuckets(start, now);
+
+  // archive_end cross-reference: IEM's full ASOS catalog (2,929 sites)
+  // carries decommissioning metadata that the AOMC catalog doesn't.
+  // Build a lookup once per scan so classify() can mark OFFLINE accurately.
+  const archiveEndByKey = new Map<string, string | null>();
+  try {
+    const { allAsosStations } = await import("./stations");
+    for (const s of allAsosStations()) {
+      archiveEndByKey.set(normStationKey(s.id), s.archive_end ?? null);
+    }
+  } catch { /* optional enrichment */ }
+
   return cat.map((s) => {
-    const ms = byStation.get(normStationKey(s.id)) || [];
-    const cls = classify(ms, now);
+    const key = normStationKey(s.id);
+    const ms = byStation.get(key) || [];
+    const archiveEnd = archiveEndByKey.get(key) ?? null;
+    const cls = classify(ms, now, expectedBuckets, archiveEnd);
     return {
       station: s.id,
       name: s.name,
@@ -214,7 +352,8 @@ export function scanSummary(rows: ScanRow[]): {
   total: number;
 } {
   const counts: Record<StationStatus, number> = {
-    CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0, "NO DATA": 0,
+    CLEAN: 0, FLAGGED: 0, MISSING: 0, OFFLINE: 0,
+    INTERMITTENT: 0, RECOVERED: 0, "NO DATA": 0,
   };
   for (const r of rows) counts[r.status] = (counts[r.status] || 0) + 1;
   return { counts, total: rows.length };
