@@ -38,9 +38,12 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
     report_type: ["3", "4"],
   };
   const text = await fetchText(`${IEM_BASE}/cgi-bin/request/asos.py`, {
-    query, timeoutMs: 45_000, retries: 3,
+    query, timeoutMs: 60_000, retries: 6,
   });
-  if (!text) return [];
+  if (!text) {
+    console.warn(`[iem] batch of ${stations.length} returned null text after retries`);
+    return [];
+  }
   return parseCsv(text);
 }
 
@@ -102,13 +105,15 @@ function classify(
   metars: RawMetarRow[],
   now: Date,
 ): Pick<ScanRow, "status" | "minutes_since_last_report" | "last_metar" | "last_valid" | "probable_reason"> {
+  // Empty set → station reported nothing in the 4h window we asked for.
+  // That's MISSING, not NO DATA (the latter is pre-scan-only state).
   if (metars.length === 0) {
     return {
-      status: "NO DATA",
+      status: "MISSING",
       minutes_since_last_report: null,
       last_metar: null,
       last_valid: null,
-      probable_reason: "no METARs returned by IEM",
+      probable_reason: "no METAR in the 4h scan window",
     };
   }
   // Sort newest-first by valid timestamp.

@@ -23,7 +23,7 @@ export const SOURCES: Source[] = [
     url: "https://mesonet.agron.iastate.edu",
     used_for: "Primary METAR + 1-minute ASOS fetch, network scans",
     auth: "none", cadence: "near real-time", trust: "mirror",
-    rate_limit: "3 req/s (empirical — asos.py stricter; bucket serialises batches)",
+    rate_limit: "2 req/s (empirical — asos.py leaks 429 at 3; bucket serialises batches)",
     notes: "Academic mirror of NCEI/NOAA archives. Free, fast, no API key.",
   },
   {

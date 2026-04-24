@@ -28,9 +28,10 @@ const DEFAULT_UA = "owl-ui/2.0 (asos-tools-ui; github.com/consigcody94/asos-tool
  *    - `safe:` conservative guess where no doc exists
  */
 export const HOST_LIMITS: Record<string, { capacity: number; refillPerSec: number; note: string }> = {
-  // IEM CGI — the asos.py batch endpoint 429s at 3+ concurrent.
-  // Single-request endpoints (GeoJSON, per-site radar PNGs) are gentler.
-  "mesonet.agron.iastate.edu":    { capacity: 3,  refillPerSec: 3,    note: "emp: ~3 req/s, asos.py stricter"  },
+  // IEM CGI — asos.py still leaks 429s at 3 req/s sustained. Settling on
+  // 2 req/s (capacity 2, refill 2/s) gets the full 920-station scan
+  // through without batch drops; cost is ~25s extra wall-clock.
+  "mesonet.agron.iastate.edu":    { capacity: 2,  refillPerSec: 2,    note: "emp: 2 req/s (asos.py leaks 429 at 3)" },
 
   // NWS documented: ~5 req/s sustained. UA required.
   "api.weather.gov":                { capacity: 5,  refillPerSec: 5,    note: "doc: 5 req/s, UA required"        },
@@ -201,9 +202,10 @@ export async function owlFetch<T = unknown>(
 
       const retryAfterRaw = r.headers.get("retry-after") || "";
       const retryAfter = parseFloat(retryAfterRaw);
+      // Cap at 30s — longer than that starves the 60s server-response budget.
       const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : Math.min(10_000, 500 * Math.pow(2, attempt));
+        ? Math.min(30_000, retryAfter * 1000)
+        : Math.min(15_000, 500 * Math.pow(2, attempt));
       console.warn(`[owl-fetch] ${host} ${r.status}; attempt ${attempt + 1}/${retries}; backoff ${backoffMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
     } catch (e) {
