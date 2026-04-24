@@ -3,19 +3,15 @@
  */
 
 import { NextResponse } from "next/server";
-import { getScan, getCachedScan } from "@/lib/server/scan-cache";
+import { getScan } from "@/lib/server/scan-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  // Use cached if fresh; otherwise kick off a scan (caller awaits).
-  let scan;
-  try {
-    scan = await getScan();
-  } catch {
-    scan = getCachedScan();
-  }
+  // Non-blocking: returns cached (possibly stale) data immediately and
+  // kicks a background refresh when stale/cold. SSR never blocks.
+  const scan = getScan();
 
   if (!scan) {
     return NextResponse.json({

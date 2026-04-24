@@ -11,7 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { chat } from "@/lib/openai";
-import { getScan } from "@/lib/server/scan-cache";
+import { getScanFresh } from "@/lib/server/scan-cache";
 import { fetchAirSigmet } from "@/lib/server/awc";
 import { trackEvent, trackMetric } from "@/lib/telemetry";
 
@@ -43,7 +43,7 @@ export async function POST(req: Request) {
 
   // Pull live context in parallel: scan results + active SIGMETs.
   const [scan, sigmetsRaw] = await Promise.all([
-    getScan().catch(() => null),
+    getScanFresh().catch(() => null),
     fetchAirSigmet().catch(() => [] as Array<Record<string, unknown>>),
   ]);
   const scanRows: ScanRow[] = (scan?.rows as unknown as ScanRow[]) || [];

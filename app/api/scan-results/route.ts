@@ -10,7 +10,16 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
 
-  const scan = await getScan();
+  const scan = getScan();
+  if (!scan) {
+    return NextResponse.json({
+      scanned_at: null,
+      duration_ms: null,
+      total: 0,
+      rows: [],
+      warming: true,
+    });
+  }
   let rows = scan.rows;
   if (status) {
     const want = status.toUpperCase();

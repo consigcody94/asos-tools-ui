@@ -1,10 +1,20 @@
-/** In-process scan cache.
+/** In-process scan cache with stale-while-revalidate semantics.
  *
- *  The first request after cold-start pays the 10–20 s IEM round trip;
- *  subsequent requests within ``TTL_MS`` return the memoised result.
- *  When the cache is cold or stale, **all** concurrent callers await a
- *  single in-flight scan (``_inflight``) so 50 simultaneous page loads
- *  don't fire 50 identical scans against IEM.
+ *  Policy:
+ *    - Fresh cache (<TTL_MS old) → return immediately.
+ *    - Stale cache               → return stale + kick background refresh.
+ *    - Cold (no cache ever)      → return null + kick background refresh;
+ *                                   the caller renders a "warming" state
+ *                                   so SSR never blocks on the first hit.
+ *
+ *  Crucially: a 100 s scan on a cold replica used to block `/` server-
+ *  render, which in turn starved the ACA readiness probe and marked the
+ *  replica Unavailable. With stale-while-revalidate, first page-load
+ *  returns in <100 ms, the scan lands in the background, and subsequent
+ *  requests get real data.
+ *
+ *  A single in-flight scan is serialised via `_inflight` so concurrent
+ *  callers never fire duplicate IEM requests.
  */
 
 import { scanNetwork, scanSummary } from "./iem";
@@ -34,13 +44,29 @@ async function runScan(): Promise<ScanState> {
   };
 }
 
-export async function getScan(force = false): Promise<ScanState> {
+function kickBackgroundRefresh(): void {
+  if (_inflight) return;
+  _inflight = runScan()
+    .then((s) => { _cache = s; return s; })
+    .catch((e) => { console.warn("[scan] background refresh failed:", e); throw e; })
+    .finally(() => { _inflight = null; });
+  // Explicitly don't await.
+}
+
+/** Return the current scan state, kicking a background refresh when stale
+ *  or cold. The caller never awaits a cold scan. */
+export function getScan(): ScanState | null {
   const fresh = _cache && (Date.now() - Date.parse(_cache.scanned_at) < TTL_MS);
-  if (fresh && !force) return _cache!;
+  if (!fresh) kickBackgroundRefresh();
+  return _cache;
+}
+
+/** Force-await the next scan. Used by the ai-brief endpoint, which
+ *  legitimately needs fresh data regardless of cache age. */
+export async function getScanFresh(): Promise<ScanState> {
   if (_inflight) return _inflight;
-  _inflight = runScan().then((s) => { _cache = s; _inflight = null; return s; })
-    .catch((e) => { _inflight = null; throw e; });
-  return _inflight;
+  kickBackgroundRefresh();
+  return _inflight!;
 }
 
 export function getCachedScan(): ScanState | null { return _cache; }
