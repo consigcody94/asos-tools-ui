@@ -36,7 +36,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    # Emits a single signal: are the OIDC secrets configured?
+    # If not, the deploy job is skipped — keeping the run green rather
+    # than red-failing every push while OIDC is pending Entra approval.
+    runs-on: ubuntu-latest
+    outputs:
+      has_oidc: ${{ steps.check.outputs.has_oidc }}
+    steps:
+      - id: check
+        env:
+          HAVE_CLIENT: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAVE_TENANT: ${{ secrets.AZURE_TENANT_ID != '' }}
+          HAVE_SUB:    ${{ secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        run: |
+          if [ "$HAVE_CLIENT" = "true" ] && [ "$HAVE_TENANT" = "true" ] && [ "$HAVE_SUB" = "true" ]; then
+            echo "has_oidc=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::OIDC secrets present — deploy will run"
+          else
+            echo "has_oidc=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::OIDC secrets NOT set — deploy skipped. Configure AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID after Entra admin enables app registration for this account."
+          fi
+
   deploy:
+    needs: preflight
+    if: needs.preflight.outputs.has_oidc == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
