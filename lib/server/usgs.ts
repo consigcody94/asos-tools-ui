@@ -1,8 +1,9 @@
-/** USGS Earthquake Hazards Program — GeoJSON summary feeds. */
+/** USGS Earthquake Hazards Program — GeoJSON summary feeds.
+ *  "Reasonable use" policy; our token bucket caps at 5 req/s to stay well under.
+ */
 
 import { haversineKm } from "./stations";
-
-const UA = "owl-ui/2.0 (asos-tools-ui)";
+import { fetchJson } from "./fetcher";
 
 const FEEDS = {
   hour:        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
@@ -29,32 +30,26 @@ export interface Quake {
 }
 
 async function fetchFeed(key: UsgsFeed): Promise<Quake[]> {
-  try {
-    const r = await fetch(FEEDS[key], {
-      headers: { "User-Agent": UA, Accept: "application/geo+json" },
-      signal: AbortSignal.timeout(12_000),
-      next: { revalidate: 300 },
-    });
-    if (!r.ok) return [];
-    const j = (await r.json()) as { features?: Array<{ id: string; properties: Record<string, unknown>; geometry: { coordinates: number[] } }> };
-    if (!j?.features) return [];
-    return j.features.map((f) => {
-      const p = f.properties;
-      const c = f.geometry?.coordinates || [];
-      return {
-        id:       String(f.id || p.code || ""),
-        mag:      typeof p.mag === "number" ? p.mag : null,
-        place:    String(p.place || ""),
-        time_ms:  typeof p.time === "number" ? p.time : null,
-        url:      String(p.url || ""),
-        tsunami:  Boolean(p.tsunami),
-        alert:    String(p.alert || ""),
-        lat:      Number(c[1] ?? 0),
-        lon:      Number(c[0] ?? 0),
-        depth_km: typeof c[2] === "number" ? c[2] : null,
-      };
-    });
-  } catch { return []; }
+  const j = await fetchJson<{ features?: Array<{ id: string; properties: Record<string, unknown>; geometry: { coordinates: number[] } }> }>(
+    FEEDS[key], { headers: { Accept: "application/geo+json" }, timeoutMs: 15_000 },
+  );
+  if (!j?.features) return [];
+  return j.features.map((f) => {
+    const p = f.properties;
+    const c = f.geometry?.coordinates || [];
+    return {
+      id:       String(f.id || p.code || ""),
+      mag:      typeof p.mag === "number" ? p.mag : null,
+      place:    String(p.place || ""),
+      time_ms:  typeof p.time === "number" ? p.time : null,
+      url:      String(p.url || ""),
+      tsunami:  Boolean(p.tsunami),
+      alert:    String(p.alert || ""),
+      lat:      Number(c[1] ?? 0),
+      lon:      Number(c[0] ?? 0),
+      depth_km: typeof c[2] === "number" ? c[2] : null,
+    };
+  });
 }
 
 export async function fetchRecentQuakes(feed: UsgsFeed = "day"): Promise<Quake[]> {

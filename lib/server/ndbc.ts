@@ -1,9 +1,11 @@
-/** NDBC buoy realtime2 feed parser + nearest-buoy wrapper. */
+/** NDBC buoy realtime2 feed parser + nearest-buoy wrapper.
+ *  Per-buoy .txt; rate limited to 1 req/s per host via fetcher.
+ */
 
 import { nearestBuoy } from "./stations";
+import { fetchText } from "./fetcher";
 
 const BASE = "https://www.ndbc.noaa.gov";
-const UA = "owl-ui/2.0 (asos-tools-ui)";
 
 const COLS = [
   "yy","mm","dd","hh","mn","wind_dir_deg","wind_mps","gust_mps",
@@ -43,15 +45,11 @@ function parseRealtime2First(text: string): BuoyObs | null {
 
 export async function fetchBuoyLatest(buoyId: string): Promise<BuoyObs | null> {
   if (!buoyId) return null;
-  try {
-    const r = await fetch(`${BASE}/data/realtime2/${buoyId.toUpperCase()}.txt`, {
-      headers: { "User-Agent": UA, Accept: "text/plain" },
-      signal: AbortSignal.timeout(10_000),
-      next: { revalidate: 600 },
-    });
-    if (!r.ok) return null;
-    return parseRealtime2First(await r.text());
-  } catch { return null; }
+  const text = await fetchText(`${BASE}/data/realtime2/${buoyId.toUpperCase()}.txt`, {
+    timeoutMs: 15_000,
+  });
+  if (!text) return null;
+  return parseRealtime2First(text);
 }
 
 export async function observationsNear(

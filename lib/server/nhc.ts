@@ -1,9 +1,11 @@
-/** NHC active tropical cyclones. */
+/** NHC active tropical cyclones.
+ *  Single-file JSON; bucket caps at 1 req/s for politeness.
+ */
 
 import { haversineKm } from "./stations";
+import { fetchJson } from "./fetcher";
 
 const FEED = "https://www.nhc.noaa.gov/CurrentStorms.json";
-const UA = "owl-ui/2.0 (asos-tools-ui)";
 
 const CLASS: Record<string, string> = {
   DB: "Disturbance", TD: "Tropical Depression", TS: "Tropical Storm",
@@ -29,37 +31,31 @@ export interface Storm {
 }
 
 export async function fetchActiveStorms(): Promise<Storm[]> {
-  try {
-    const r = await fetch(FEED, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
-      signal: AbortSignal.timeout(12_000),
-      next: { revalidate: 300 },
+  const data = await fetchJson<{ activeStorms?: Array<Record<string, unknown>> }>(
+    FEED, { timeoutMs: 15_000 },
+  );
+  const storms = data?.activeStorms || [];
+  const out: Storm[] = [];
+  for (const s of storms) {
+    const lat = Number(s.latitudeNumeric);
+    const lon = Number(s.longitudeNumeric);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const cls = String(s.classification || "");
+    out.push({
+      id: String(s.id || ""),
+      name: String(s.name || ""),
+      classification: cls,
+      class_label: CLASS[cls.toUpperCase()] || cls,
+      intensity_kt: String(s.intensity || ""),
+      pressure_mb: String(s.pressure || ""),
+      movement: String(s.latestMovement || ""),
+      lat, lon,
+      public_advisory: ((s.publicAdvisory as Record<string, unknown>) || {}).url as string || "",
+      forecast_cone: ((s.forecastCone as Record<string, unknown>) || {}).zipFile as string || "",
+      track_cone_graphic: ((s.trackCone as Record<string, unknown>) || {}).url as string || "",
     });
-    if (!r.ok) return [];
-    const data = (await r.json()) as { activeStorms?: Array<Record<string, unknown>> };
-    const storms = data?.activeStorms || [];
-    const out: Storm[] = [];
-    for (const s of storms) {
-      const lat = Number(s.latitudeNumeric);
-      const lon = Number(s.longitudeNumeric);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      const cls = String(s.classification || "");
-      out.push({
-        id: String(s.id || ""),
-        name: String(s.name || ""),
-        classification: cls,
-        class_label: CLASS[cls.toUpperCase()] || cls,
-        intensity_kt: String(s.intensity || ""),
-        pressure_mb: String(s.pressure || ""),
-        movement: String(s.latestMovement || ""),
-        lat, lon,
-        public_advisory: ((s.publicAdvisory as Record<string, unknown>) || {}).url as string || "",
-        forecast_cone: ((s.forecastCone as Record<string, unknown>) || {}).zipFile as string || "",
-        track_cone_graphic: ((s.trackCone as Record<string, unknown>) || {}).url as string || "",
-      });
-    }
-    return out;
-  } catch { return []; }
+  }
+  return out;
 }
 
 export async function stormsNear(

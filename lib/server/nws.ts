@@ -1,19 +1,10 @@
-/** NWS api.weather.gov — current conditions + active CAP alerts. */
+/** NWS api.weather.gov — current conditions + active CAP alerts.
+ *  Documented limit: 5 req/s per client with descriptive User-Agent.
+ */
+
+import { fetchJson } from "./fetcher";
 
 const BASE = "https://api.weather.gov";
-const UA = "(owl-ui/2.0, github.com/consigcody94/asos-tools-ui)";
-
-async function getJson<T>(path: string, revalidate = 60): Promise<T | null> {
-  try {
-    const r = await fetch(`${BASE}${path}`, {
-      headers: { "User-Agent": UA, Accept: "application/geo+json" },
-      signal: AbortSignal.timeout(12_000),
-      next: { revalidate },
-    });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch { return null; }
-}
 
 const cToF = (c: number | null | undefined) =>
   typeof c === "number" ? Math.round((c * 9 / 5 + 32) * 10) / 10 : null;
@@ -50,10 +41,11 @@ export interface CurrentConditions {
 
 export async function getCurrentConditions(stationId: string): Promise<CurrentConditions | null> {
   const icao = stationId.trim().toUpperCase();
-  const data = await getJson<{ properties: Record<string, unknown> }>(
-    `/stations/${icao}/observations/latest`, 60,
+  const data = await fetchJson<{ properties: Record<string, unknown> }>(
+    `${BASE}/stations/${icao}/observations/latest`,
+    { headers: { Accept: "application/geo+json" }, timeoutMs: 15_000 },
   );
-  if (!data || !data.properties) return null;
+  if (!data?.properties) return null;
   const p = data.properties;
   return {
     station: icao,
@@ -85,22 +77,23 @@ export interface CapAlert {
 }
 
 export async function getActiveAlerts(): Promise<CapAlert[]> {
-  const data = await getJson<{ features: Array<{ properties: Record<string, unknown> }> }>(
-    "/alerts/active", 60,
+  const data = await fetchJson<{ features: Array<{ properties: Record<string, unknown> }> }>(
+    `${BASE}/alerts/active`,
+    { headers: { Accept: "application/geo+json" }, timeoutMs: 15_000 },
   );
   if (!data?.features) return [];
   return data.features.map((f) => {
     const p = f.properties;
     return {
-      id:         String(p.id || ""),
-      event:      String(p.event || ""),
-      severity:   String(p.severity || "Unknown"),
-      urgency:    String(p.urgency || ""),
-      area_desc:  String(p.areaDesc || ""),
-      sent:       String(p.sent || ""),
-      expires:    String(p.expires || ""),
-      sender:     String(p.senderName || ""),
-      headline:   String(p.headline || ""),
+      id:        String(p.id || ""),
+      event:     String(p.event || ""),
+      severity:  String(p.severity || "Unknown"),
+      urgency:   String(p.urgency || ""),
+      area_desc: String(p.areaDesc || ""),
+      sent:      String(p.sent || ""),
+      expires:   String(p.expires || ""),
+      sender:    String(p.senderName || ""),
+      headline:  String(p.headline || ""),
     };
   });
 }

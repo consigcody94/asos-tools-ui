@@ -1,6 +1,9 @@
-/** FAA NOTAM API client — key-gated, graceful fallback. */
+/** FAA NOTAM API client — key-gated, graceful fallback.
+ *  Documented: 5 req/s per client. Rate limited via fetcher bucket.
+ */
 
-const UA = "owl-ui/2.0 (asos-tools-ui)";
+import { fetchJson } from "./fetcher";
+
 const BASE = "https://external-api.faa.gov/notamapi/v1/notams";
 
 export function isConfigured(): boolean {
@@ -22,38 +25,31 @@ export interface Notam {
 export async function fetchNotamsForIcao(icao: string): Promise<Notam[]> {
   if (!isConfigured() || !icao) return [];
   const up = icao.trim().toUpperCase();
-  const params = new URLSearchParams({
-    icaoLocation: up, responseFormat: "geoJson", pageSize: "50",
-  });
-  try {
-    const r = await fetch(`${BASE}?${params.toString()}`, {
+  const data = await fetchJson<{ items?: Array<{ properties?: { coreNOTAMData?: { notam?: Record<string, unknown> } } }> }>(
+    BASE, {
+      query: { icaoLocation: up, responseFormat: "geoJson", pageSize: "50" },
       headers: {
-        "User-Agent": UA,
-        Accept: "application/json",
         client_id: process.env.FAA_NOTAM_CLIENT_ID!,
         client_secret: process.env.FAA_NOTAM_CLIENT_SECRET!,
       },
-      signal: AbortSignal.timeout(15_000),
-      next: { revalidate: 600 },
-    });
-    if (!r.ok) return [];
-    const data = (await r.json()) as { items?: Array<{ properties?: { coreNOTAMData?: { notam?: Record<string, unknown> } } }> };
-    const items = data?.items || [];
-    return items.map((it) => {
-      const core = (it.properties?.coreNOTAMData?.notam || {}) as Record<string, unknown>;
-      return {
-        id:              String(core.id || ""),
-        number:          String(core.number || ""),
-        type:            String(core.type || ""),
-        icao:            String(core.icaoLocation || up),
-        location:        String(core.location || ""),
-        effective_start: String(core.effectiveStart || ""),
-        effective_end:   String(core.effectiveEnd || ""),
-        classification:  String(core.classification || ""),
-        text:            String(core.text || ""),
-      };
-    });
-  } catch { return []; }
+      timeoutMs: 20_000,
+    },
+  );
+  const items = data?.items || [];
+  return items.map((it) => {
+    const core = (it.properties?.coreNOTAMData?.notam || {}) as Record<string, unknown>;
+    return {
+      id:              String(core.id || ""),
+      number:          String(core.number || ""),
+      type:            String(core.type || ""),
+      icao:            String(core.icaoLocation || up),
+      location:        String(core.location || ""),
+      effective_start: String(core.effectiveStart || ""),
+      effective_end:   String(core.effectiveEnd || ""),
+      classification: String(core.classification || ""),
+      text:            String(core.text || ""),
+    };
+  });
 }
 
 export interface NotamSummary {
