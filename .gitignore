@@ -10,3 +10,6 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 .turbo/
+acr_log.txt
+acr_run_cab.log
+acr_run_*.log
