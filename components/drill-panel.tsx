@@ -20,12 +20,52 @@ interface StormRec { id: string; name: string; class_label: string; intensity_kt
 interface BuoyPack { buoy: { id: string; name: string; distance_km: number }; obs: Record<string, number | null> | null }
 interface NotamSum { configured: boolean; count: number; equipment_out: number; asos_related: number; items: Array<Record<string, string>> }
 
+interface DecodedMetarClient {
+  raw: string;
+  station: string;
+  observed_at: string | null;
+  modifier: "AUTO" | "COR" | null;
+  wind: {
+    direction: number | "VRB" | null;
+    speed_kt: number | null;
+    gust_kt: number | null;
+    variable_from: number | null;
+    variable_to: number | null;
+  } | null;
+  visibility_sm: number | null;
+  visibility_text: string | null;
+  weather: Array<{ raw: string; text: string }>;
+  clouds: Array<{ coverage: string; height_ft: number | null; type: string | null }>;
+  sky_summary: string | null;
+  temperature_c: number | null;
+  temperature_f: number | null;
+  dewpoint_c: number | null;
+  dewpoint_f: number | null;
+  altimeter_inhg: number | null;
+  altimeter_hpa: number | null;
+  ceiling_ft: number | null;
+  flight_category: "VFR" | "MVFR" | "IFR" | "LIFR" | null;
+  remarks: string | null;
+  has_maintenance: boolean;
+  maintenance_reasons: Array<{ sensor: string; reason: string }>;
+}
+
+interface StationMetarResponse {
+  source: string;
+  scanned_at?: string;
+  status?: string;
+  decoded: DecodedMetarClient | null;
+  error?: string;
+}
+
 export function DrillPanel({ station, onClose }: Props) {
   const [cams, setCams] = useState<WeatherCam[]>([]);
   const [camsLoading, setCamsLoading] = useState(false);
   const [hazards, setHazards] = useState<{
     quakes: QuakeRec[]; storms: StormRec[]; buoy: BuoyPack | null; notams: NotamSum;
   } | null>(null);
+  const [metar, setMetar] = useState<StationMetarResponse | null>(null);
+  const [metarLoading, setMetarLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -33,6 +73,8 @@ export function DrillPanel({ station, onClose }: Props) {
     setCamsLoading(true);
     setCams([]);
     setHazards(null);
+    setMetar(null);
+    setMetarLoading(true);
 
     getCamerasNear(station.lat, station.lng, 25, 4)
       .then(setCams)
@@ -49,6 +91,12 @@ export function DrillPanel({ station, onClose }: Props) {
         }),
       )
       .catch(() => setHazards(null));
+
+    fetch(`/api/station/${encodeURIComponent(station.id)}/metar`)
+      .then((r) => r.json())
+      .then((data: StationMetarResponse) => setMetar(data))
+      .catch(() => setMetar(null))
+      .finally(() => setMetarLoading(false));
   }, [station]);
 
   if (!station) return null;
@@ -99,6 +147,9 @@ export function DrillPanel({ station, onClose }: Props) {
           <X size={18} />
         </button>
       </div>
+
+      {/* Decoded METAR */}
+      <DecodedMetarBlock metar={metar} loading={metarLoading} />
 
       {/* Live coverage — WeatherCam + NEXRAD + GOES */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
@@ -358,4 +409,130 @@ function stationRadarLoop(
     km: Math.round(bestD * 10) / 10,
     fallback: false,
   };
+}
+
+// -- Decoded METAR block ----------------------------------------------------
+
+function DecodedMetarBlock({ metar, loading }: { metar: StationMetarResponse | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="mb-5">
+        <div className="noc-h3 mb-2">Current Observation</div>
+        <div className="text-[0.78rem] text-[color:var(--color-fg-dim)]">Decoding latest METAR…</div>
+      </div>
+    );
+  }
+  if (!metar?.decoded) {
+    return (
+      <div className="mb-5">
+        <div className="noc-h3 mb-2">Current Observation</div>
+        <div className="text-[0.78rem] text-[color:var(--color-fg-dim)]">
+          {metar?.error ?? "No recent METAR available."}
+        </div>
+      </div>
+    );
+  }
+
+  const d = metar.decoded;
+  const cat = d.flight_category;
+  const catPill =
+    cat === "VFR"   ? "owl-pill owl-pill-ok"   :
+    cat === "MVFR"  ? "owl-pill owl-pill-info" :
+    cat === "IFR"   ? "owl-pill owl-pill-warn" :
+    cat === "LIFR"  ? "owl-pill owl-pill-crit" :
+                      "owl-pill owl-pill-dim";
+
+  const windStr = d.wind
+    ? formatWind(d.wind)
+    : "—";
+  const vis = d.visibility_text ?? (d.visibility_sm != null ? `${d.visibility_sm} SM` : "—");
+  const temp = d.temperature_f != null ? `${d.temperature_f.toFixed(0)}°F / ${d.temperature_c?.toFixed(1)}°C` : "—";
+  const dew  = d.dewpoint_f != null ? `${d.dewpoint_f.toFixed(0)}°F / ${d.dewpoint_c?.toFixed(1)}°C` : "—";
+  const alti = d.altimeter_inhg != null
+    ? `${d.altimeter_inhg.toFixed(2)} inHg / ${d.altimeter_hpa?.toFixed(0)} hPa`
+    : "—";
+  const ceil = d.ceiling_ft != null ? `${d.ceiling_ft.toLocaleString()} ft` : "—";
+  const whenStr = d.observed_at ? new Date(d.observed_at).toISOString().replace("T", " ").replace(/:\d{2}\.\d{3}Z$/, "Z") : "—";
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-baseline justify-between mb-2 flex-wrap gap-2">
+        <div className="flex items-baseline gap-3">
+          <div className="noc-h3 m-0">Current Observation</div>
+          {cat && <span className={catPill}>{cat}</span>}
+        </div>
+        <div className="text-[0.68rem] text-[color:var(--color-fg-dim)]">
+          Observed {whenStr} · source: {metar.source === "scan_cache" ? "scan cache" : "IEM live"}
+        </div>
+      </div>
+
+      {/* Metric grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <Metric label="Wind"      value={windStr} />
+        <Metric label="Visibility" value={vis} />
+        <Metric label="Temp / Dew" value={`${d.temperature_f?.toFixed(0) ?? "—"}° / ${d.dewpoint_f?.toFixed(0) ?? "—"}°F`} sub={`${d.temperature_c?.toFixed(1) ?? "—"} / ${d.dewpoint_c?.toFixed(1) ?? "—"} °C`} />
+        <Metric label="Altimeter" value={d.altimeter_inhg != null ? `${d.altimeter_inhg.toFixed(2)} inHg` : "—"} sub={d.altimeter_hpa != null ? `${d.altimeter_hpa.toFixed(0)} hPa` : undefined} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <Metric label="Sky"      value={d.sky_summary ?? "—"} />
+        <Metric label="Ceiling"  value={ceil} />
+        <Metric label="Weather"  value={d.weather.length ? d.weather.map((w) => w.text).join(" · ") : "None reported"} />
+      </div>
+
+      {/* Maintenance reasons */}
+      {d.has_maintenance && d.maintenance_reasons.length > 0 && (
+        <div className="mb-3 border-l-2 border-[color:var(--color-warn)] bg-[color:var(--color-warn-soft)] px-3 py-2 rounded-r">
+          <div className="text-[0.68rem] uppercase tracking-wider text-[color:var(--color-warn)] font-semibold mb-1">
+            Maintenance flag ($) active
+          </div>
+          <ul className="space-y-1 text-[0.78rem] text-[color:var(--color-fg)]">
+            {d.maintenance_reasons.map((r, i) => (
+              <li key={i}>
+                <span className="font-semibold">{r.sensor}</span>
+                <span className="text-[color:var(--color-fg-muted)]"> — {r.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Raw + remarks */}
+      <details className="text-[0.74rem]">
+        <summary className="cursor-pointer text-[color:var(--color-fg-muted)] hover:text-[color:var(--color-fg)]">
+          Raw METAR {alti !== "—" ? "· altimeter " + alti : ""}
+        </summary>
+        <pre className="mt-2 p-2 rounded bg-[color:var(--color-bg)] border border-[color:var(--color-border)] font-mono text-[0.74rem] text-[color:var(--color-fg)] whitespace-pre-wrap break-all">
+          {d.raw}
+        </pre>
+        {d.remarks && (
+          <div className="mt-2 text-[color:var(--color-fg-muted)]">
+            <span className="noc-label">Remarks</span>
+            <div className="font-mono mt-1 break-all">{d.remarks}</div>
+          </div>
+        )}
+      </details>
+    </div>
+  );
+}
+
+function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="border border-[color:var(--color-border)] rounded bg-[color:var(--color-surface-2)] px-3 py-2">
+      <div className="noc-label text-[0.62rem] mb-0.5">{label}</div>
+      <div className="text-[color:var(--color-fg)] text-[0.88rem] font-mono leading-tight">{value}</div>
+      {sub && <div className="text-[0.68rem] text-[color:var(--color-fg-dim)] mt-0.5 font-mono">{sub}</div>}
+    </div>
+  );
+}
+
+function formatWind(w: DecodedMetarClient["wind"]): string {
+  if (!w) return "—";
+  if (w.speed_kt === 0 || (w.direction === 0 && w.speed_kt === 0)) return "Calm";
+  const dir = w.direction === "VRB" ? "VRB" : w.direction !== null ? `${String(w.direction).padStart(3, "0")}°` : "—";
+  const spd = w.speed_kt !== null ? `${w.speed_kt} kt` : "—";
+  const gust = w.gust_kt !== null ? ` G ${w.gust_kt} kt` : "";
+  const vary = w.variable_from !== null && w.variable_to !== null
+    ? ` (${String(w.variable_from).padStart(3, "0")}–${String(w.variable_to).padStart(3, "0")}°)` : "";
+  return `${dir} @ ${spd}${gust}${vary}`;
 }

@@ -1,24 +1,23 @@
-/** Lightweight METAR parsing — just enough for network monitoring.
+/** Light-weight METAR utilities + re-exports of the full decoder.
  *
- *  We do NOT implement a full METAR decoder here; the critical fields
- *  for OWL are:
- *    - maintenance flag (trailing `$`)
- *    - the timestamp (DDHHmmZ → UTC)
- *    - visibility / ceiling for flight-category rollups (optional)
+ *  This module predates `metar-decode.ts` and `metar-reasons.ts`; it
+ *  exposes the cheap helpers that the scan hot-path uses and re-exports
+ *  the full decoder for anything that needs structured fields.
  */
+
+export { hasMaintenanceFlag, decodeMaintenanceReasons, decodeReasonsShort, SENSOR_INDICATORS } from "./metar-reasons";
+export type { MaintenanceReason } from "./metar-reasons";
+export { decodeMetar } from "./metar-decode";
+export type {
+  DecodedMetar, WindGroup, CloudLayer, CloudCoverage, WeatherGroup,
+  WeatherIntensity, FlightCategory,
+} from "./metar-decode";
 
 const UA = "owl-ui/2.0 (asos-tools-ui)";
 export const METAR_UA = UA;
 
-/** Detect the ASOS `$` maintenance-check indicator. */
-export function hasMaintenanceFlag(metar: string | null | undefined): boolean {
-  if (!metar) return false;
-  return metar.trimEnd().endsWith("$") || metar.trimEnd().endsWith("$=");
-}
-
 /** Parse the DDHHmmZ token out of a METAR into a UTC Date.
- *  Returns null if unparseable. Uses `reference` (default now) to resolve
- *  the month/year for the DDHHmmZ (the year/month isn't in the METAR). */
+ *  Used by the scan loop for the fast silent-station calculation. */
 export function parseMetarTime(
   metar: string,
   reference: Date = new Date(),
@@ -29,15 +28,11 @@ export function parseMetarTime(
   const hh = parseInt(m[2], 10);
   const mm = parseInt(m[3], 10);
   if (!Number.isFinite(dd) || !Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  // Start from the reference's month/year.  If the parsed DD is greater
-  // than today's DD (i.e. observation is newer than today), we crossed a
-  // month boundary — back up one month.
   const y = reference.getUTCFullYear();
   const mo = reference.getUTCMonth();
   let d = new Date(Date.UTC(y, mo, dd, hh, mm, 0));
   const now = reference.getTime();
   if (d.getTime() > now + 6 * 3600 * 1000) {
-    // Observation is more than 6 h in the future → rollback one month.
     d = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0));
   }
   return d;
