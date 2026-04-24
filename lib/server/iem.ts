@@ -11,7 +11,13 @@ import { aomcStations } from "./stations";
 const IEM_BASE =
   process.env.IEM_API_BASE || "https://mesonet.agron.iastate.edu";
 
-const BATCH = 40;
+// IEM aggressively rate-limits `asos.py`. A batch of 40 with 6-way parallelism
+// triggers 429 on every call. 20-station batches served serially with a
+// 300ms politeness gap survive the limiter cleanly; scan still completes
+// in ~25s for 920 stations.
+const BATCH = 20;
+const INTER_BATCH_MS = 300;
+const MAX_RETRIES = 3;
 
 interface RawMetarRow {
   station: string;
@@ -19,8 +25,10 @@ interface RawMetarRow {
   metar: string;
 }
 
-async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRow[]> {
-  if (!stations.length) return [];
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function fetchBatchOnce(stations: string[], hoursBack: number): Promise<{ ok: boolean; rows: RawMetarRow[]; status: number; retryAfter?: number }> {
+  if (!stations.length) return { ok: true, rows: [], status: 200 };
   const params = new URLSearchParams();
   for (const s of stations) params.append("station", s);
   params.set("data", "metar");
@@ -31,36 +39,48 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
   params.set("missing", "M");
   params.set("trace", "T");
   params.set("direct", "no");
-  // IEM wants ``report_type`` repeated, not comma-joined: &report_type=3&report_type=4
   params.append("report_type", "3");
   params.append("report_type", "4");
 
-  // Use the last-N-hours convenience route so the CGI doesn't have to
-  // parse explicit start/end.
   const url = `${IEM_BASE}/cgi-bin/request/asos.py?${params.toString()}`;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
   try {
     const r = await fetch(url, {
       signal: ctrl.signal,
       headers: { "User-Agent": METAR_UA, Accept: "text/plain" },
     });
     if (!r.ok) {
-      console.warn(`[iem] batch of ${stations.length} returned ${r.status}`);
-      return [];
+      const retryAfter = parseFloat(r.headers.get("retry-after") || "0");
+      return { ok: false, rows: [], status: r.status, retryAfter: Number.isFinite(retryAfter) ? retryAfter : 0 };
     }
     const text = await r.text();
-    const rows = parseCsv(text);
-    if (rows.length === 0 && text.length > 0) {
-      console.warn(`[iem] batch parsed 0 rows from ${text.length} bytes; first 120 chars: ${text.slice(0, 120)}`);
-    }
-    return rows;
+    return { ok: true, rows: parseCsv(text), status: 200 };
   } catch (e) {
-    console.warn(`[iem] batch fetch failed: ${String(e)}`);
-    return [];
+    console.warn(`[iem] batch fetch error: ${String(e)}`);
+    return { ok: false, rows: [], status: 0 };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRow[]> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const r = await fetchBatchOnce(stations, hoursBack);
+    if (r.ok) return r.rows;
+    // Rate-limit or transient — back off and retry.
+    if (r.status === 429 || r.status === 503 || r.status === 502 || r.status === 0) {
+      const waitMs = Math.max(r.retryAfter ? r.retryAfter * 1000 : 0, 800 * Math.pow(2, attempt));
+      console.warn(`[iem] batch ${r.status} (attempt ${attempt + 1}/${MAX_RETRIES}); backing off ${waitMs}ms`);
+      await sleep(waitMs);
+      continue;
+    }
+    // Non-retryable (4xx other than 429) — give up.
+    console.warn(`[iem] batch failed non-retryable status ${r.status}`);
+    return [];
+  }
+  console.warn(`[iem] batch gave up after ${MAX_RETRIES} retries`);
+  return [];
 }
 
 function parseCsv(text: string): RawMetarRow[] {
@@ -88,7 +108,12 @@ function parseCsv(text: string): RawMetarRow[] {
   return out;
 }
 
-/** Fetch the last-N-hours of METARs for a set of stations. */
+/** Fetch the last-N-hours of METARs for a set of stations.
+ *
+ *  Batches are run **serially** with a small delay between each — IEM's
+ *  rate limiter starts 429-ing at ~3 concurrent requests. Serial with a
+ *  300 ms gap gets 920 stations through in ~25-35s which is still well
+ *  under the 60s server response budget. */
 export async function fetchRecentMetars(
   stations: string[],
   hoursBack = 4,
@@ -97,14 +122,11 @@ export async function fetchRecentMetars(
   for (let i = 0; i < stations.length; i += BATCH) {
     batches.push(stations.slice(i, i + BATCH));
   }
-  // Up to 6 concurrent batch requests — IEM handles this comfortably and
-  // it keeps 920-station cold scans under ~15 s.
   const out: RawMetarRow[] = [];
-  const cc = 6;
-  for (let i = 0; i < batches.length; i += cc) {
-    const slice = batches.slice(i, i + cc);
-    const results = await Promise.all(slice.map((b) => fetchBatch(b, hoursBack)));
-    for (const r of results) out.push(...r);
+  for (let i = 0; i < batches.length; i++) {
+    const rows = await fetchBatch(batches[i], hoursBack);
+    for (const r of rows) out.push(r);
+    if (i < batches.length - 1) await sleep(INTER_BATCH_MS);
   }
   return out;
 }
