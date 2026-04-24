@@ -31,7 +31,9 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
   params.set("missing", "M");
   params.set("trace", "T");
   params.set("direct", "no");
-  params.set("report_type", "3,4"); // METAR + SPECI
+  // IEM wants ``report_type`` repeated, not comma-joined: &report_type=3&report_type=4
+  params.append("report_type", "3");
+  params.append("report_type", "4");
 
   // Use the last-N-hours convenience route so the CGI doesn't have to
   // parse explicit start/end.
@@ -43,10 +45,18 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
       signal: ctrl.signal,
       headers: { "User-Agent": METAR_UA, Accept: "text/plain" },
     });
-    if (!r.ok) return [];
+    if (!r.ok) {
+      console.warn(`[iem] batch of ${stations.length} returned ${r.status}`);
+      return [];
+    }
     const text = await r.text();
-    return parseCsv(text);
-  } catch {
+    const rows = parseCsv(text);
+    if (rows.length === 0 && text.length > 0) {
+      console.warn(`[iem] batch parsed 0 rows from ${text.length} bytes; first 120 chars: ${text.slice(0, 120)}`);
+    }
+    return rows;
+  } catch (e) {
+    console.warn(`[iem] batch fetch failed: ${String(e)}`);
     return [];
   } finally {
     clearTimeout(timer);
@@ -172,6 +182,18 @@ function classify(
   };
 }
 
+/** IEM strips leading K/P/T from US ICAOs in its response body (so
+ *  ``KJFK`` comes back as ``JFK``), while the AOMC catalog uses the full
+ *  4-letter form. Normalise both sides to the K/P/T-stripped shape so
+ *  the map lookup matches regardless of which form the upstream picked. */
+function normStationKey(id: string): string {
+  const s = id.trim().toUpperCase();
+  if (s.length === 4 && (s[0] === "K" || s[0] === "P" || s[0] === "T")) {
+    return s.substring(1);
+  }
+  return s;
+}
+
 /** Run a full AOMC-catalog scan. Returns per-station rows. */
 export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
   const cat = aomcStations();
@@ -180,7 +202,7 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
   const metars = await fetchRecentMetars(ids, hoursBack);
   const byStation = new Map<string, RawMetarRow[]>();
   for (const m of metars) {
-    const k = m.station.toUpperCase();
+    const k = normStationKey(m.station);
     const arr = byStation.get(k) || [];
     arr.push(m);
     byStation.set(k, arr);
@@ -188,7 +210,7 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
 
   const now = new Date();
   return cat.map((s) => {
-    const ms = byStation.get(s.id) || [];
+    const ms = byStation.get(normStationKey(s.id)) || [];
     const cls = classify(ms, now);
     return {
       station: s.id,
