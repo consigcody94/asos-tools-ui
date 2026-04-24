@@ -15,7 +15,7 @@ import asosRaw from "@/lib/data/asos_stations.json";
 import wsrRaw from "@/lib/data/wsr88d_sites.json";
 import ndbcRaw from "@/lib/data/ndbc_met_stations.json";
 
-type AomcRawShape = Array<Record<string, unknown>>;
+type RawRow = Record<string, unknown>;
 
 function toNumberOrNull(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -27,24 +27,31 @@ function toNumberOrNull(v: unknown): number | null {
 }
 
 // ---- AOMC 920-station catalog -----------------------------------------------
+// The JSON ships as ``{source, fetched_utc, record_count, stations: [...]}``.
 let _aomc: AomcStation[] | null = null;
 export function aomcStations(): AomcStation[] {
   if (_aomc) return _aomc;
-  const rows = aomcRaw as AomcRawShape;
+  const wrap = aomcRaw as unknown as { stations?: RawRow[] };
+  const rows: RawRow[] = Array.isArray(wrap) ? (wrap as unknown as RawRow[]) : wrap.stations ?? [];
+  // Feet → metres for the bundled AOMC catalog (elev_ft).
+  const ftToM = (ft: number | null) => ft == null ? null : Math.round(ft * 0.3048 * 10) / 10;
   _aomc = rows
     .map((r) => {
-      const id = String(r.id ?? r.icao ?? r.ICAO ?? r.station ?? "").toUpperCase();
+      const id = String(r.id ?? r.icao ?? r.call ?? "").toUpperCase();
       const lat = toNumberOrNull(r.lat ?? r.latitude);
       const lon = toNumberOrNull(r.lon ?? r.longitude ?? r.lng);
       if (!id || lat === null || lon === null) return null;
+      const elevFt = toNumberOrNull(r.elev_ft);
+      const elevM = elevFt !== null ? ftToM(elevFt) :
+        toNumberOrNull(r.elevation_m ?? r.elev_m ?? r.elev ?? r.elevation);
       return {
         id,
         name: String(r.name ?? r.station_name ?? ""),
         state: String(r.state ?? r.ST ?? ""),
         lat,
         lon,
-        elevation_m: toNumberOrNull(r.elevation_m ?? r.elev_m ?? r.elev ?? r.elevation),
-        network: String(r.network ?? r.net ?? ""),
+        elevation_m: elevM,
+        network: String(r.station_types ?? r.network ?? r.net ?? ""),
         operator: String(r.operator ?? r.agency ?? ""),
       } as AomcStation;
     })
@@ -58,12 +65,11 @@ export function aomcById(id: string): AomcStation | undefined {
 }
 
 // ---- Full ASOS catalog (2,929 sites) ---------------------------------------
-type AsosRawRow = Record<string, unknown>;
 let _asos: AomcStation[] | null = null;
 export function allAsosStations(): AomcStation[] {
   if (_asos) return _asos;
-  const rows = asosRaw as AsosRawRow[] | Record<string, AsosRawRow>;
-  const iter: AsosRawRow[] = Array.isArray(rows) ? rows : Object.values(rows);
+  const rows = asosRaw as unknown as RawRow[] | Record<string, RawRow>;
+  const iter: RawRow[] = Array.isArray(rows) ? rows : Object.values(rows);
   _asos = iter
     .map((r) => {
       const id = String(r.id ?? r.icao ?? r.ICAO ?? r.station ?? "").toUpperCase();

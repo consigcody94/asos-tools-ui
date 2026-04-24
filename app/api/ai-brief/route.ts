@@ -42,11 +42,18 @@ export async function POST(req: Request) {
   } catch { /* empty body OK */ }
 
   // Pull live context in parallel: scan results + active SIGMETs.
-  const [scan, sigmets] = await Promise.all([
+  const [scan, sigmetsRaw] = await Promise.all([
     getScan().catch(() => null),
-    fetchAirSigmet().catch(() => [] as AirSigmet[]),
+    fetchAirSigmet().catch(() => [] as Array<Record<string, unknown>>),
   ]);
   const scanRows: ScanRow[] = (scan?.rows as unknown as ScanRow[]) || [];
+  const sigmets: AirSigmet[] = sigmetsRaw.map((s) => ({
+    hazard:         (s.hazard as string | undefined),
+    airSigmetType:  (s.airSigmetType as string | undefined),
+    rawAirSigmet:   (s.rawAirSigmet as string | undefined),
+    validTimeFrom:  (s.validTimeFrom as string | undefined),
+    validTimeTo:    (s.validTimeTo as string | undefined),
+  }));
 
   // Tally per-status counts.
   const counts: Record<string, number> = {};
