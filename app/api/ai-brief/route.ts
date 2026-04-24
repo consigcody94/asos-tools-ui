@@ -11,7 +11,8 @@
 
 import { NextResponse } from "next/server";
 import { chat } from "@/lib/openai";
-import { OWL_API_BASE } from "@/lib/api";
+import { getScan } from "@/lib/server/scan-cache";
+import { fetchAirSigmet } from "@/lib/server/awc";
 import { trackEvent, trackMetric } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
@@ -41,18 +42,11 @@ export async function POST(req: Request) {
   } catch { /* empty body OK */ }
 
   // Pull live context in parallel: scan results + active SIGMETs.
-  const [scanRows, sigmets] = await Promise.all([
-    fetch(`${OWL_API_BASE}/api/scan-results`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => (d?.rows as ScanRow[]) || [])
-      .catch(() => [] as ScanRow[]),
-    fetch("https://aviationweather.gov/api/data/airsigmet?format=json", {
-      signal: AbortSignal.timeout(8_000),
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => (Array.isArray(d) ? d : [] as AirSigmet[]))
-      .catch(() => [] as AirSigmet[]),
+  const [scan, sigmets] = await Promise.all([
+    getScan().catch(() => null),
+    fetchAirSigmet().catch(() => [] as AirSigmet[]),
   ]);
+  const scanRows: ScanRow[] = (scan?.rows as unknown as ScanRow[]) || [];
 
   // Tally per-status counts.
   const counts: Record<string, number> = {};

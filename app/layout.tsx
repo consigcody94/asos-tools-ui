@@ -2,19 +2,21 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
 import { NewsTicker } from "@/components/news-ticker";
+import { CommandPalette } from "@/components/command-palette";
 
 export const metadata: Metadata = {
-  title: "O.W.L. — Observation Watch Log",
+  title: "OWL — Observation Watch Log",
   description:
-    "ASOS network observation & maintenance monitor. " +
-    "920 stations, live globe, FAA WeatherCam loops, NESDIS GOES satellite, " +
-    "AWC METAR/TAF/SIGMET, NWS CAP alerts.",
-  applicationName: "O.W.L.",
-  authors: [{ name: "Cody" }],
+    "ASOS network operations console. 920 NWS / FAA / DOD weather stations, " +
+    "live network scan, FAA WeatherCam loops, NWS NEXRAD radar, NESDIS GOES " +
+    "satellite, AWC aviation hazards, NWS CAP alerts, USGS earthquakes, NHC " +
+    "tropical cyclones, NDBC buoys, NOAA SWPC space weather.",
+  applicationName: "OWL",
+  authors: [{ name: "Cody Churchwell", url: "mailto:cto@sentinelowl.org" }],
 };
 
 export const viewport: Viewport = {
-  themeColor: "#050816",
+  themeColor: "#0b1220",
   colorScheme: "dark",
 };
 
@@ -23,10 +25,6 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // The pulse data is fetched in app/page.tsx (server component) and
-  // passed down through context-free prop drilling.  We render the
-  // sidebar here without it for now and feed it via SWR-style
-  // re-render on the index page.  Simple + correct.
   return (
     <html lang="en">
       <body>
@@ -35,6 +33,7 @@ export default function RootLayout({
           <main className="flex-1 px-6 py-4 pb-12 max-w-[1640px]">{children}</main>
         </div>
         <NewsTicker />
+        <CommandPalette />
       </body>
     </html>
   );

@@ -1,13 +1,14 @@
 "use client";
 
-/** Persistent left rail with brand mark, network pulse mini-cards, and
- *  the tab navigation.  Uses Next.js `usePathname` so the active tab is
- *  reflected in the URL (deep-linkable, browser-back-able).
+/** Persistent left rail — brand, nav, author credit.
+ *  Uses Next.js `usePathname` so the active tab is reflected in the URL.
  */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ArrowUpRight, BarChart3, Globe, Info, MapPin, Settings, ShieldAlert, Cloud } from "lucide-react";
+import {
+  Activity, BarChart3, Globe, Info, MapPin, Settings, Cloud,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV: { href: string; label: string; icon: typeof Globe }[] = [
@@ -32,30 +33,38 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
   return (
     <aside
       className="
-        w-[260px] shrink-0 h-dvh sticky top-0
-        border-r border-noc-border
-        bg-[linear-gradient(180deg,var(--color-noc-panel)_0%,var(--color-noc-deep)_100%)]
+        w-[240px] shrink-0 h-dvh sticky top-0
+        border-r border-[color:var(--color-border)]
+        bg-[color:var(--color-surface)]
         flex flex-col
       "
     >
       {/* Brand */}
-      <div className="px-5 pt-6 pb-4 border-b border-noc-border">
-        <div className="font-display text-[1.5rem] font-bold tracking-[0.04em] text-noc-cyan drop-shadow-[0_0_10px_rgba(0,229,255,0.45)]">
-          O.W.L.
-        </div>
-        <div className="font-display text-[0.65rem] tracking-[0.36em] uppercase text-noc-cyan opacity-80 mt-1">
-          Observation Watch Log
-        </div>
-        <div className="noc-label mt-3 text-[0.65rem]">
-          ASOS network observation monitor
+      <div className="px-5 pt-5 pb-4 border-b border-[color:var(--color-border)]">
+        <div className="flex items-center gap-2">
+          <div
+            className="w-7 h-7 rounded-md flex items-center justify-center text-white font-semibold text-sm"
+            style={{ background: "var(--color-accent-strong)" }}
+            aria-hidden
+          >
+            O
+          </div>
+          <div>
+            <div className="text-[0.95rem] font-semibold leading-tight text-[color:var(--color-fg)]">
+              OWL
+            </div>
+            <div className="text-[0.62rem] tracking-[0.1em] uppercase text-[color:var(--color-fg-muted)] leading-tight">
+              Observation Watch Log
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Network pulse */}
+      {/* Network pulse (compact) */}
       {pulse && (
-        <div className="px-5 py-4 border-b border-noc-border space-y-3">
-          <div className="noc-h3 text-[0.7rem]">Network Pulse</div>
-          <div className="grid grid-cols-3 gap-2">
+        <div className="px-5 py-3 border-b border-[color:var(--color-border)]">
+          <div className="noc-h3 mb-2 text-[0.62rem]">Network Pulse</div>
+          <div className="grid grid-cols-3 gap-1.5">
             <PulseCell label="Clean"   value={pulse.clean}   tone="ok"   />
             <PulseCell label="Flagged" value={pulse.flagged} tone="warn" />
             <PulseCell label="Missing" value={pulse.missing} tone="crit" />
@@ -64,7 +73,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
       )}
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
         {NAV.map((item) => {
           const active =
             item.href === "/"
@@ -76,35 +85,48 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 px-3 py-2",
-                "font-display uppercase tracking-[0.16em] text-[0.78rem]",
-                "border-l-2 transition-all",
+                "flex items-center gap-2.5 px-3 py-1.5 rounded-md",
+                "text-[0.85rem] font-medium transition-colors",
                 active
-                  ? "border-l-noc-cyan bg-[rgba(0,229,255,0.05)] text-noc-text shadow-[inset_0_0_20px_rgba(0,229,255,0.06)]"
-                  : "border-l-transparent text-noc-muted hover:text-noc-text hover:bg-[rgba(0,229,255,0.03)] hover:border-l-noc-cyan-dim",
+                  ? "bg-[color:var(--color-accent-soft)] text-[color:var(--color-fg)]"
+                  : "text-[color:var(--color-fg-muted)] hover:bg-[color:var(--color-surface-2)] hover:text-[color:var(--color-fg)]",
               )}
             >
-              <Icon size={14} className={active ? "text-noc-cyan" : ""} />
+              <Icon
+                size={15}
+                strokeWidth={1.75}
+                className={active ? "text-[color:var(--color-accent)]" : ""}
+              />
               {item.label}
             </Link>
           );
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="px-5 py-4 border-t border-noc-border">
-        <div className="noc-label text-[0.6rem] mb-2">Data Sources</div>
-        <div className="text-[0.7rem] text-noc-dim leading-relaxed">
-          NCEI · IEM · AWC · NWS · FAA WeatherCams · NESDIS · SWPC
+      {/* Author credit — replaces the HF link. */}
+      <div className="px-5 py-4 border-t border-[color:var(--color-border)]">
+        <div className="text-[0.68rem] leading-relaxed text-[color:var(--color-fg-dim)]">
+          Made by{" "}
+          <a
+            href="mailto:cto@sentinelowl.org"
+            className="text-[color:var(--color-accent)] hover:text-[color:var(--color-fg)] font-medium transition-colors"
+          >
+            Cody Churchwell
+          </a>
+          <br/>
+          CTO, Sentinel OWL
         </div>
-        <a
-          href="https://huggingface.co/spaces/consgicody/asos-tools"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-3 inline-flex items-center gap-1 text-[0.7rem] text-noc-cyan hover:text-noc-text"
-        >
-          Streamlit edition <ArrowUpRight size={12} />
-        </a>
+        <div className="mt-2 text-[0.62rem] text-[color:var(--color-fg-dim)]">
+          v2.0.0 ·{" "}
+          <a
+            href="https://github.com/consigcody94/asos-tools-ui"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[color:var(--color-fg-muted)]"
+          >
+            source
+          </a>
+        </div>
       </div>
     </aside>
   );
@@ -121,24 +143,21 @@ function PulseCell({
 }) {
   const color =
     tone === "ok"
-      ? "var(--color-noc-ok)"
+      ? "var(--color-ok)"
       : tone === "warn"
-        ? "var(--color-noc-warn)"
-        : "var(--color-noc-crit)";
+        ? "var(--color-warn)"
+        : "var(--color-crit)";
   return (
-    <div className="bg-noc-panel-alt border border-noc-border px-2 py-2">
+    <div className="bg-[color:var(--color-surface-2)] border border-[color:var(--color-border)] px-2 py-1.5 rounded">
       <div
-        className="text-[0.6rem] uppercase tracking-[0.16em] mb-1 flex items-center gap-1"
+        className="text-[0.56rem] uppercase tracking-[0.08em] mb-0.5 font-semibold"
         style={{ color }}
       >
-        <ShieldAlert size={9} /> {label}
+        {label}
       </div>
       <div
-        className="font-mono text-lg leading-none"
-        style={{
-          color,
-          textShadow: `0 0 8px ${color}55`,
-        }}
+        className="font-mono text-[0.95rem] leading-none font-medium"
+        style={{ color }}
       >
         {value}
       </div>

@@ -9,7 +9,6 @@
 
 import { useMemo, useState } from "react";
 import { type Station } from "@/lib/data/stations";
-import { OWL_API_BASE } from "@/lib/api";
 import { AlertTriangle, Plane, Search } from "lucide-react";
 
 interface AirSigmet {
@@ -285,9 +284,8 @@ function StationView({ stations }: { stations: Station[] }) {
         </div>
       </div>
 
-      <div className="mt-4 text-[0.7rem] text-noc-dim">
-        Source: <a href="https://aviationweather.gov" target="_blank" rel="noopener noreferrer" className="text-noc-cyan">aviationweather.gov</a>
-        &middot; backend: <a href={OWL_API_BASE} target="_blank" rel="noopener noreferrer" className="text-noc-cyan">{OWL_API_BASE.replace("https://", "")}</a>
+      <div className="mt-4 text-[0.7rem] text-[color:var(--color-fg-dim)]">
+        Source: <a href="https://aviationweather.gov" target="_blank" rel="noopener noreferrer" className="text-[color:var(--color-accent)]">aviationweather.gov</a>
       </div>
     </div>
   );

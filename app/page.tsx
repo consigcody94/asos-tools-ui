@@ -72,25 +72,28 @@ export default async function SummaryPage() {
 
       <header className="mb-6 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="font-display text-4xl font-bold tracking-tight text-noc-text">
-            OBSERVATION CONTROL CENTER
+          <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
+            Network Summary
           </h1>
-          <p className="noc-label mt-1 flex items-center gap-3 flex-wrap">
-          <span>Network-Wide ASOS Status &middot; Live NOAA / FAA / NWS Feeds</span>
-          <span className="text-noc-border-strong">|</span>
-          <span className="font-mono normal-case tracking-normal text-[0.7rem] text-noc-cyan">
-            scan {asOf}
-            {scanDurationS !== null && (
-              <span className="text-noc-dim">
-                {" "}({scanDurationS.toFixed(1)}s)
-              </span>
-            )}
-          </span>
-          {throttled && (
-            <span className="text-[0.7rem] text-noc-warn font-mono normal-case tracking-normal">
-              · upstream throttled — values may underreport
+          <p className="mt-1 flex items-center gap-2 flex-wrap text-[0.82rem] text-[color:var(--color-fg-muted)]">
+            <span>Live ASOS network status — NOAA / FAA / NWS</span>
+            <span className="text-[color:var(--color-fg-dim)]">·</span>
+            <span className="font-mono text-[color:var(--color-accent)]">
+              scan {asOf}
+              {scanDurationS !== null && (
+                <span className="text-[color:var(--color-fg-dim)]">
+                  {" "}({scanDurationS.toFixed(1)}s)
+                </span>
+              )}
             </span>
-          )}
+            {throttled && (
+              <>
+                <span className="text-[color:var(--color-fg-dim)]">·</span>
+                <span className="text-[color:var(--color-warn)]">
+                  upstream throttled — values may underreport
+                </span>
+              </>
+            )}
           </p>
         </div>
         <AiBrief />

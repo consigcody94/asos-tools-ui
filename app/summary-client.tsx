@@ -26,13 +26,14 @@ const REGIONS = [
 ];
 
 // Status -> (color, point size) for the globe rendering.
+// Colours align with the global theme tokens — muted, not neon.
 const STATUS_VIZ: Record<string, { color: string; size: number }> = {
-  CLEAN:        { color: "#00ff88", size: 0.30 },
-  RECOVERED:    { color: "#06b6d4", size: 0.35 },
-  INTERMITTENT: { color: "#eab308", size: 0.40 },
-  FLAGGED:      { color: "#ffbe2e", size: 0.50 },
-  MISSING:      { color: "#ff3860", size: 0.60 },
-  "NO DATA":    { color: "#64748b", size: 0.30 },
+  CLEAN:        { color: "#3fb27f", size: 0.30 },
+  RECOVERED:    { color: "#5fa8e6", size: 0.35 },
+  INTERMITTENT: { color: "#c48828", size: 0.40 },
+  FLAGGED:      { color: "#e0a73a", size: 0.50 },
+  MISSING:      { color: "#e25c6b", size: 0.60 },
+  "NO DATA":    { color: "#5f6f8f", size: 0.30 },
 };
 const DEFAULT_VIZ = STATUS_VIZ.CLEAN;
 
@@ -57,22 +58,11 @@ export function SummaryClient() {
 
     async function refresh() {
       try {
-        const base =
-          process.env.NEXT_PUBLIC_OWL_API_BASE ||
-          "https://consgicody-asos-tools.hf.space";
-        const res = await fetch(`${base}/api/scan-results`, {
-          signal: ctrl.signal,
-        });
+        const res = await fetch(`/api/scan-results`, { signal: ctrl.signal });
         if (!res.ok) return;
-        const data: { rows?: ScanRow[]; never_scanned?: boolean } =
-          await res.json();
+        const data: { rows?: ScanRow[] } = await res.json();
         if (cancelled) return;
-        // If the HF Space hasn't run a tick yet, leave the status map
-        // empty so points render in the neutral 'no scan yet' color.
-        if (data.never_scanned || !data.rows) {
-          setStatusByStation({});
-          return;
-        }
+        if (!data.rows) { setStatusByStation({}); return; }
         const next: Record<string, string> = {};
         for (const r of data.rows) {
           if (r.station) {

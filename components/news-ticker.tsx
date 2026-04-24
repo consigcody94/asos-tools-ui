@@ -10,7 +10,6 @@
  */
 
 import { useEffect, useState } from "react";
-import { OWL_API_BASE } from "@/lib/api";
 import { Radio } from "lucide-react";
 
 interface Item {
@@ -35,7 +34,7 @@ export function NewsTicker() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${OWL_API_BASE}/api/news?limit=24`)
+    fetch(`/api/news?limit=24`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelled || !d) return;
@@ -61,44 +60,21 @@ export function NewsTicker() {
   const dup = [...items, ...items];
 
   return (
-    <div className="
-      owl-ticker-track
-      fixed left-[260px] right-0 bottom-0 h-8 z-40
-      bg-[linear-gradient(90deg,rgba(11,18,32,0.95)_0%,rgba(15,26,48,0.90)_50%,rgba(11,18,32,0.95)_100%)]
-      border-t border-noc-cyan-dim shadow-[0_-4px_18px_rgba(0,229,255,0.06)]
-      backdrop-blur-sm overflow-hidden
-    ">
+    <div className="owl-ticker-track fixed left-[240px] right-0 bottom-0 h-8 z-40 bg-[color:var(--color-surface)] border-t border-[color:var(--color-border)] overflow-hidden">
       {/* Live-feed badge pinned left */}
-      <div className="
-        absolute left-0 top-0 bottom-0 w-[88px] z-10
-        flex items-center justify-center gap-1
-        bg-gradient-to-r from-noc-cyan to-noc-cyan-dim
-        text-noc-deep font-display font-bold text-[10px]
-        uppercase tracking-[0.22em]
-        shadow-[0_0_12px_rgba(0,229,255,0.55)]
-      ">
-        <Radio size={10} /> LIVE FEED
+      <div className="absolute left-0 top-0 bottom-0 w-[78px] z-10 flex items-center justify-center gap-1 bg-[color:var(--color-surface-2)] text-[color:var(--color-fg-muted)] text-[0.62rem] uppercase tracking-[0.1em] font-semibold border-r border-[color:var(--color-border)]">
+        <Radio size={10} /> Live
       </div>
-
-      <div
-        className="
-          owl-ticker-strip
-          flex items-center h-full whitespace-nowrap gap-7 pl-[100px]
-          will-change-transform
-        "
-      >
+      <div className="owl-ticker-strip flex items-center h-full whitespace-nowrap gap-6 pl-[88px] will-change-transform">
         {dup.map((it, i) => (
           <a
             key={i}
             href={it.link}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-noc-text hover:text-noc-cyan font-body text-xs tracking-wide flex items-center gap-2 shrink-0"
+            className="text-[color:var(--color-fg)] hover:text-[color:var(--color-accent)] text-xs flex items-center gap-2 shrink-0"
           >
-            <span className="
-              text-noc-cyan border border-noc-cyan-dim px-1.5 py-0.5
-              text-[9px] uppercase tracking-[0.12em] font-display font-bold
-            ">
+            <span className="owl-pill owl-pill-dim">
               {it.source}
             </span>
             {it.title}

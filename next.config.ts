@@ -2,12 +2,12 @@ import type { NextConfig } from "next";
 
 /** O.W.L. Next.js config.
  *
- *  - `output: "standalone"` makes the build deploy-clean on Vercel (no
- *    surprises) and also lets us containerise it later if we ever need to.
- *  - `OWL_API_BASE` env var points at the existing HF Space FastAPI sidecar.
- *    The default is the public Space; override per-environment in Vercel.
- *  - `images.remotePatterns` allowlists the upstream image CDNs we
- *    render from: FAA WeatherCams, NESDIS GOES, IEM radar.
+ *  - `output: "standalone"` emits a self-contained build bundle for
+ *    Azure Container Apps / Vercel / Docker — no runtime npm install.
+ *  - `images.remotePatterns` allowlists upstream image CDNs we render:
+ *    FAA WeatherCams, NESDIS GOES, IEM radar, NWS RIDGE (radar.weather.gov).
+ *  - Everything ASOS-related is server-side in `lib/server/*` and served
+ *    through this app's own `/api/*` routes — no external backend.
  */
 const config: NextConfig = {
   output: "standalone",
@@ -21,10 +21,15 @@ const config: NextConfig = {
       { protocol: "https", hostname: "*.faa.gov" },
       { protocol: "https", hostname: "*.noaa.gov" },
       { protocol: "https", hostname: "*.nesdis.noaa.gov" },
+      { protocol: "https", hostname: "*.weather.gov" },
       { protocol: "https", hostname: "cdn.star.nesdis.noaa.gov" },
+      { protocol: "https", hostname: "radar.weather.gov" },
       { protocol: "https", hostname: "images.wcams-static.faa.gov" },
       { protocol: "https", hostname: "weathercams.faa.gov" },
       { protocol: "https", hostname: "mesonet.agron.iastate.edu" },
+      { protocol: "https", hostname: "www.nhc.noaa.gov" },
+      { protocol: "https", hostname: "earthquake.usgs.gov" },
+      { protocol: "https", hostname: "www.ndbc.noaa.gov" },
     ],
   },
   // Strict cross-origin headers so the page itself can't be embedded

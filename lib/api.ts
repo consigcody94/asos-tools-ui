@@ -1,32 +1,31 @@
-/** O.W.L. backend client — talks to the existing FastAPI sidecar deployed
- *  on the Hugging Face Space (asos-tools).  We deliberately keep all
- *  Python data work (avwx-engine METAR parsing, stumpy anomaly detection,
- *  IEM/AWC/NCEI scrapers, FAA WeatherCams reverse-engineering) on the
- *  Python side and consume it as REST from this Next.js front-end.
+/** OWL API client — Next.js self-hosted backend.
  *
- *  Default base = the public HF Space.  Override per-environment with
- *  `OWL_API_BASE` in Vercel env vars to point at staging / a fork / etc.
+ *  This repo used to proxy to a HuggingFace Space; we've since ported
+ *  every data source natively into `lib/server/*` with matching API
+ *  routes under `app/api/*`. All fetches here hit the same origin.
  */
 
-const DEFAULT_BASE = "https://consgicody-asos-tools.hf.space";
-export const OWL_API_BASE = (
-  process.env.OWL_API_BASE ||
-  process.env.NEXT_PUBLIC_OWL_API_BASE ||
-  DEFAULT_BASE
-).replace(/\/+$/, "");
+const SAME_ORIGIN = "";
 
-// ---------------------------------------------------------------------------
-// Shared shapes
-// ---------------------------------------------------------------------------
+/** On the server we can't use relative URLs; read the base from env or the
+ *  request's origin via middleware. For server-components we prefer
+ *  ``NEXT_PUBLIC_SITE_URL`` when set; otherwise we fall back to localhost.
+ *  Keeping this branch simple — the app is single-origin. */
+function base(): string {
+  if (typeof window !== "undefined") return SAME_ORIGIN;
+  return process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+}
 
-/** Network-wide health snapshot returned by `/api/health`. */
+/** Retained for back-compat with components that import this symbol. */
+export const OWL_API_BASE = base();
+
+// -- Shared shapes -----------------------------------------------------------
+
 export interface HealthSnapshot {
   status: "ok" | "degraded" | "unknown";
   now?: string;
   scan_in_flight?: boolean;
   status_counts?: Record<string, number>;
-  next_scan_iso?: string | null;
-  built_at?: string;
   last_tick_at?: string | null;
   last_tick_ok?: boolean | null;
   last_tick_stations?: number;
@@ -37,7 +36,19 @@ export interface HealthSnapshot {
   upstream_outage?: boolean;
 }
 
-/** A single WeatherCam returned by `/api/webcams/near`. */
+export interface ScanRowClient {
+  station: string;
+  name?: string;
+  state?: string;
+  lat?: number;
+  lon?: number;
+  status: string;
+  minutes_since_last_report: number | null;
+  last_metar: string | null;
+  last_valid: string | null;
+  probable_reason: string | null;
+}
+
 export interface WeatherCam {
   id: number;
   site_name: string;
@@ -45,9 +56,9 @@ export interface WeatherCam {
   distance_nm: number;
   lat: number;
   lon: number;
+  thumbnail_url?: string;
 }
 
-/** Single news item from `/api/news`. */
 export interface NewsItem {
   source: string;
   title: string;
@@ -56,71 +67,63 @@ export interface NewsItem {
   severity?: "info" | "warn" | "crit";
 }
 
-// ---------------------------------------------------------------------------
-// Low-level fetch wrapper with timeout + structured error.
-// ---------------------------------------------------------------------------
-
+// -- Fetcher -----------------------------------------------------------------
 async function owlFetch<T>(
   path: string,
   init: RequestInit & { timeoutMs?: number; revalidate?: number } = {},
 ): Promise<T> {
-  const { timeoutMs = 12_000, revalidate, ...rest } = init;
+  const { timeoutMs = 20_000, revalidate, ...rest } = init;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-
   try {
-    const res = await fetch(`${OWL_API_BASE}${path}`, {
+    const r = await fetch(`${base()}${path}`, {
       ...rest,
       signal: ctrl.signal,
-      // Server-component fetches: cache for `revalidate` seconds.
-      // Default 60 s, which is fine for the Summary KPI strip.
       next: revalidate !== undefined ? { revalidate } : { revalidate: 60 },
       headers: {
         Accept: "application/json",
-        "User-Agent": "owl-ui/1.0 (asos-tools-ui)",
+        "User-Agent": "owl-ui/2.0",
         ...(rest.headers || {}),
       },
     });
-    if (!res.ok) {
-      throw new Error(`OWL API ${path} returned ${res.status}`);
-    }
-    return (await res.json()) as T;
+    if (!r.ok) throw new Error(`OWL API ${path} returned ${r.status}`);
+    return (await r.json()) as T;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public client surface — one function per endpoint.
-// ---------------------------------------------------------------------------
+// -- Endpoints ---------------------------------------------------------------
+export const getHealth = () =>
+  owlFetch<HealthSnapshot>("/api/health", { revalidate: 30 });
 
-/** Liveness + scan-state snapshot.  Cheap, called from the ops banner. */
-export async function getHealth(): Promise<HealthSnapshot> {
-  return owlFetch<HealthSnapshot>("/api/health", { revalidate: 30 });
-}
+export const getScanResults = () =>
+  owlFetch<{ scanned_at: string; duration_ms: number; total: number; rows: ScanRowClient[] }>(
+    "/api/scan-results", { revalidate: 30 },
+  );
 
-/** Camera lookup near a lat/lon.  Used by the drill panel. */
-export async function getCamerasNear(
-  lat: number,
-  lon: number,
-  radiusNm = 25,
-  limit = 4,
-): Promise<WeatherCam[]> {
-  const qs = new URLSearchParams({
-    lat: String(lat),
-    lon: String(lon),
-    radius_nm: String(radiusNm),
-    limit: String(limit),
-  });
-  return owlFetch<WeatherCam[]>(`/api/webcams/near?${qs}`, { revalidate: 300 });
-}
+export const getCamerasNear = (lat: number, lon: number, radiusNm = 25, limit = 4) =>
+  owlFetch<WeatherCam[]>(
+    `/api/webcams/near?lat=${lat}&lon=${lon}&radius_nm=${radiusNm}&limit=${limit}`,
+    { revalidate: 600 },
+  );
 
-/** Aggregated NOAA / FAA / NTSB / AWC headlines for the news ticker. */
-export async function getNews(limit = 30): Promise<NewsItem[]> {
-  return owlFetch<NewsItem[]>(`/api/news?limit=${limit}`, { revalidate: 120 });
-}
+export const getNews = (limit = 30) =>
+  owlFetch<NewsItem[]>(`/api/news?limit=${limit}`, { revalidate: 300 });
 
-/** A list of source-of-truth records describing each upstream feed. */
-export async function getSources(): Promise<unknown[]> {
-  return owlFetch<unknown[]>("/api/sources", { revalidate: 3600 });
-}
+export const getSources = () =>
+  owlFetch<Array<Record<string, unknown>>>("/api/sources", { revalidate: 3600 });
+
+export const getStationHazards = (id: string) =>
+  owlFetch<{
+    station: { id: string; name: string; lat: number; lon: number; state: string };
+    quakes: Array<Record<string, unknown>>;
+    storms: Array<Record<string, unknown>>;
+    buoy: unknown;
+    notams: Record<string, unknown>;
+  }>(`/api/station/${encodeURIComponent(id)}/hazards`, { revalidate: 120 });
+
+export const searchStations = (q: string, limit = 20) =>
+  owlFetch<Array<{ id: string; name: string; state: string; lat: number; lon: number }>>(
+    `/api/stations/search?q=${encodeURIComponent(q)}&limit=${limit}`, { revalidate: 3600 },
+  );

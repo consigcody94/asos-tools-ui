@@ -31,10 +31,10 @@ export function TabShell({
       <OpsBanner status="operational" nodesActive={920} nodesTotal={920} />
 
       <header className="mb-6">
-        <h1 className="font-display text-4xl font-bold tracking-tight text-noc-text">
-          {title.toUpperCase()}
+        <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
+          {title}
         </h1>
-        <p className="noc-label mt-1">{subtitle}</p>
+        <p className="text-[color:var(--color-fg-muted)] mt-1 text-sm">{subtitle}</p>
       </header>
 
       <div className="noc-panel">
@@ -71,21 +71,11 @@ export function TabShell({
 
         {children}
 
-        <div className="mt-5 pt-4 border-t border-noc-border">
-          <div className="noc-label text-[0.65rem] mb-1">Tracking</div>
-          <p className="text-noc-dim text-xs leading-relaxed">
-            This module&apos;s reference implementation is live on the
-            Streamlit edition at{" "}
-            <a
-              href="https://huggingface.co/spaces/consgicody/asos-tools"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-noc-cyan hover:text-noc-text"
-            >
-              consgicody/asos-tools
-            </a>
-            . The Azure build ports the same data surfaces with real-time
-            SignalR push, Application Insights, and Microsoft Entra ID SSO.
+        <div className="mt-5 pt-4 border-t border-[color:var(--color-border)]">
+          <div className="noc-label text-[0.62rem] mb-1">Tracking</div>
+          <p className="text-[color:var(--color-fg-dim)] text-xs leading-relaxed">
+            Self-hosted build — all data sources are served directly by this
+            app via <code>lib/server/*</code> + <code>/api/*</code> routes.
           </p>
         </div>
       </div>

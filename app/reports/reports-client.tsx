@@ -14,7 +14,6 @@
 
 import { useState } from "react";
 import { Download, ExternalLink, FileDown } from "lucide-react";
-import { OWL_API_BASE } from "@/lib/api";
 
 const WINDOWS = [
   { days: 1,  label: "1 day"  },
@@ -28,9 +27,8 @@ export function ReportsClient() {
   const [days, setDays] = useState(7);
   const [downloading, setDownloading] = useState(false);
 
-  function streamlitDeepLink(): string {
-    const base = "https://huggingface.co/spaces/consgicody/asos-tools";
-    return `${base}?station=${encodeURIComponent(icao)}&window=${days}`;
+  function stationDeepLink(): string {
+    return `/stations?focus=${encodeURIComponent(icao)}`;
   }
 
   function iemCsvUrl(): string {
@@ -128,20 +126,18 @@ export function ReportsClient() {
       </div>
 
       <div className="noc-panel mb-4">
-        <div className="noc-h3 mb-3">Visual Reports (Streamlit edition)</div>
-        <p className="text-noc-muted text-sm mb-4 leading-relaxed">
-          The full visual reports — annotated time-series, wind roses, KPI strips,
-          maintenance-flag heatmaps — render via matplotlib and live on the
-          Streamlit edition. Open the same station + window there for the rendered PNG.
+        <div className="noc-h3 mb-3">Visual Reports</div>
+        <p className="text-[color:var(--color-fg-muted)] text-sm mb-4 leading-relaxed">
+          Annotated time-series, wind roses, KPI strips, and maintenance-flag
+          heatmaps render in the Stations drill-panel view. Jump to the
+          station directly for the full station dashboard.
         </p>
         <a
-          href={streamlitDeepLink()}
-          target="_blank"
-          rel="noopener noreferrer"
+          href={stationDeepLink()}
           className="noc-btn flex items-center gap-2 w-fit"
         >
           <ExternalLink size={14} />
-          Open {icao} · {days}-day in Streamlit
+          Open {icao} · {days}-day station view
         </a>
       </div>
 
@@ -171,9 +167,7 @@ export function ReportsClient() {
         </ul>
       </div>
 
-      <div className="mt-4 text-[0.7rem] text-noc-dim">
-        Backend: <a href={OWL_API_BASE} target="_blank" rel="noopener noreferrer" className="text-noc-cyan">{OWL_API_BASE.replace("https://", "")}</a>
-        <span className="mx-2">·</span>
+      <div className="mt-4 text-[0.7rem] text-[color:var(--color-fg-dim)]">
         <FileDown size={11} className="inline" /> Reports archive: not yet wired
       </div>
     </>
