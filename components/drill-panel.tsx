@@ -58,6 +58,33 @@ interface StationMetarResponse {
   error?: string;
 }
 
+interface StacScene {
+  id: string;
+  collection: string;
+  datetime: string;
+  cloud_cover: number | null;
+  thumbnail_url: string | null;
+  preview_url: string | null;
+  worldview_link: string;
+  cog_visual_url: string | null;
+  platform: string | null;
+}
+
+interface ImageryResponse {
+  station: { id: string; name: string; state: string; lat: number; lon: number };
+  bbox: [number, number, number, number];
+  gibs: Array<{ layer: string; label: string; date: string; url: string }>;
+  sentinel2: StacScene[];
+  landsat: StacScene[];
+  links: {
+    nasa_worldview: string;
+    copernicus_browser: string;
+    zoom_earth: string;
+    eosda_landviewer: string;
+    sentinel_hub: string;
+  };
+}
+
 export function DrillPanel({ station, onClose }: Props) {
   const [cams, setCams] = useState<WeatherCam[]>([]);
   const [camsLoading, setCamsLoading] = useState(false);
@@ -66,6 +93,8 @@ export function DrillPanel({ station, onClose }: Props) {
   } | null>(null);
   const [metar, setMetar] = useState<StationMetarResponse | null>(null);
   const [metarLoading, setMetarLoading] = useState(false);
+  const [imagery, setImagery] = useState<ImageryResponse | null>(null);
+  const [imageryLoading, setImageryLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -97,6 +126,14 @@ export function DrillPanel({ station, onClose }: Props) {
       .then((data: StationMetarResponse) => setMetar(data))
       .catch(() => setMetar(null))
       .finally(() => setMetarLoading(false));
+
+    setImageryLoading(true);
+    setImagery(null);
+    fetch(`/api/station/${encodeURIComponent(station.id)}/imagery`)
+      .then((r) => r.json())
+      .then((data: ImageryResponse) => setImagery(data))
+      .catch(() => setImagery(null))
+      .finally(() => setImageryLoading(false));
   }, [station]);
 
   if (!station) return null;
@@ -167,6 +204,9 @@ export function DrillPanel({ station, onClose }: Props) {
           alt="NESDIS GOES loop"
         />
       </div>
+
+      {/* Overhead imagery archive */}
+      <OverheadImagery imagery={imagery} loading={imageryLoading} />
 
       {/* Site hazards */}
       <SiteHazards hazards={hazards} />
@@ -535,4 +575,136 @@ function formatWind(w: DecodedMetarClient["wind"]): string {
   const vary = w.variable_from !== null && w.variable_to !== null
     ? ` (${String(w.variable_from).padStart(3, "0")}–${String(w.variable_to).padStart(3, "0")}°)` : "";
   return `${dir} @ ${spd}${gust}${vary}`;
+}
+
+// -- Overhead Imagery (NASA Worldview / GIBS + STAC Sentinel-2 + Landsat) ---
+
+function OverheadImagery({ imagery, loading }: { imagery: ImageryResponse | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="mb-5">
+        <div className="noc-h3 mb-2">Overhead Imagery</div>
+        <div className="text-[0.78rem] text-[color:var(--color-fg-dim)]">Querying NASA / Element84 STAC…</div>
+      </div>
+    );
+  }
+  if (!imagery) {
+    return (
+      <div className="mb-5">
+        <div className="noc-h3 mb-2">Overhead Imagery</div>
+        <div className="text-[0.78rem] text-[color:var(--color-fg-dim)]">No imagery available.</div>
+      </div>
+    );
+  }
+
+  const gibsToday = imagery.gibs[0]; // MODIS Terra true-color today
+  const s2 = imagery.sentinel2[0];
+  const ls = imagery.landsat[0];
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-baseline justify-between flex-wrap mb-2 gap-2">
+        <div className="noc-h3 m-0">Overhead Imagery</div>
+        <div className="text-[0.62rem] text-[color:var(--color-fg-dim)]">
+          NASA GIBS · Sentinel-2 · Landsat-9 · ≤30% cloud filter
+        </div>
+      </div>
+
+      {/* 3 tiles: GIBS today + Sentinel-2 latest + Landsat latest */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        <ImageryTile
+          title="MODIS true-color"
+          subtitle={`Today · ${gibsToday?.date ?? "—"}`}
+          src={gibsToday?.url}
+          alt="NASA MODIS Terra true-color"
+          link={imagery.links.nasa_worldview}
+          linkLabel="Open in NASA Worldview"
+        />
+        <ImageryTile
+          title="Sentinel-2 (latest)"
+          subtitle={s2 ? `${s2.datetime.slice(0, 10)} · ${s2.cloud_cover != null ? `${s2.cloud_cover.toFixed(0)}% cloud` : "—"}` : "no recent low-cloud scene"}
+          src={s2?.thumbnail_url ?? undefined}
+          alt={s2?.id || "Sentinel-2 scene"}
+          link={imagery.links.copernicus_browser}
+          linkLabel="Open in Copernicus Browser"
+        />
+        <ImageryTile
+          title="Landsat-9 (latest)"
+          subtitle={ls ? `${ls.datetime.slice(0, 10)} · ${ls.cloud_cover != null ? `${ls.cloud_cover.toFixed(0)}% cloud` : "—"}` : "no recent low-cloud scene"}
+          src={ls?.thumbnail_url ?? undefined}
+          alt={ls?.id || "Landsat scene"}
+          link={`https://landsatlook.usgs.gov/stac-browser/collections/landsat-c2l2-sr/items/${ls?.id}`}
+          linkLabel="Open in USGS Landsat Look"
+        />
+      </div>
+
+      {/* External viewer chips */}
+      <div className="flex flex-wrap gap-2 text-[0.7rem]">
+        <span className="text-[color:var(--color-fg-muted)] mr-1">Open in:</span>
+        <ViewerChip href={imagery.links.nasa_worldview}     label="NASA Worldview" />
+        <ViewerChip href={imagery.links.copernicus_browser} label="Copernicus" />
+        <ViewerChip href={imagery.links.sentinel_hub}       label="Sentinel Hub" />
+        <ViewerChip href={imagery.links.eosda_landviewer}   label="EOSDA LandViewer" />
+        <ViewerChip href={imagery.links.zoom_earth}         label="Zoom Earth" />
+      </div>
+    </div>
+  );
+}
+
+function ImageryTile({ title, subtitle, src, alt, link, linkLabel }: {
+  title: string;
+  subtitle: string;
+  src: string | undefined;
+  alt: string;
+  link?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <div className="noc-h3 text-[0.62rem]">{title}</div>
+        <span className="text-[0.6rem] text-[color:var(--color-fg-dim)]">{subtitle}</span>
+      </div>
+      <div
+        className="relative w-full overflow-hidden rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)]"
+        style={{ aspectRatio: "1 / 1" }}
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-[color:var(--color-fg-dim)] text-xs text-center px-3">
+            No scene available
+          </div>
+        )}
+      </div>
+      {link && (
+        <a
+          href={link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[0.66rem] mt-1 inline-flex items-center gap-1 text-[color:var(--color-accent)] hover:underline"
+        >
+          {linkLabel ?? "Open"} <ExternalLink size={10} />
+        </a>
+      )}
+    </div>
+  );
+}
+
+function ViewerChip({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[color:var(--color-border)] bg-[color:var(--color-surface-2)] text-[color:var(--color-fg-muted)] hover:text-[color:var(--color-fg)] hover:border-[color:var(--color-accent)]"
+    >
+      {label} <ExternalLink size={9} />
+    </a>
+  );
 }

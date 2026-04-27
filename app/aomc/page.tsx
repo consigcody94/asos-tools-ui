@@ -59,11 +59,23 @@ export default async function AomcPage() {
       <OpsBanner status="operational" nodesActive={STATIONS.length} nodesTotal={STATIONS.length} />
 
       <header className="mb-6">
-        <h1 className="font-display text-4xl font-bold tracking-tight text-noc-text">
-          AOMC CONTROLLERS
+        <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
+          AOMC Controllers
         </h1>
-        <p className="noc-label mt-1">
-          ASOS Operations &amp; Monitoring Center &middot; Per-Operator Triage
+        <p className="text-[color:var(--color-fg-muted)] mt-1 text-sm leading-relaxed max-w-3xl">
+          Live <span className="font-mono text-[color:var(--color-warn)]">$</span>-flag stream
+          for ASOS network diagnosis. Each station self-reports a maintenance
+          anomaly; OWL decodes the METAR remarks
+          (<span className="font-mono">TSNO</span>,
+          <span className="font-mono"> PWINO</span>,
+          <span className="font-mono"> FZRANO</span>,
+          <span className="font-mono"> SLPNO</span>,
+          <span className="font-mono"> VISNO</span>,
+          <span className="font-mono"> CHINO</span>,
+          <span className="font-mono"> RVRNO</span>) so you know which
+          sensor before dialing in. No claim, no draft, no workflow — every
+          row is everything OWL knows about that station, the moment it knows it,
+          updating in real time as new METARs arrive.
         </p>
       </header>
 

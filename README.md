@@ -1,3 +1,15 @@
+---
+title: OWL — Observation Watch Log
+emoji: 🦉
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 3000
+pinned: true
+license: mit
+short_description: ASOS network NOC console — Next.js / 13 public feeds
+---
+
 # O.W.L. — Observation Watch Log
 
 **Author:** Cody Churchwell — CTO, Sentinel OWL — [`cto@sentinelowl.org`](mailto:cto@sentinelowl.org)
