@@ -141,6 +141,29 @@ export function getScan(): ScanState | null {
   return _cache;
 }
 
+/** Awaitable variant: lets a caller block until the in-process cache is
+ *  hydrated from Redis warm-restore, so the very first response after a
+ *  process start doesn't ship an empty rows[] that re-paints all 918
+ *  stations to NO DATA before the next tick arrives.
+ *
+ *  If Redis has nothing or is unavailable, this resolves quickly with
+ *  whatever the cache holds (possibly null) — never blocks waiting on
+ *  a real scan, which can take 30-60 seconds. */
+export async function getScanReady(): Promise<ScanState | null> {
+  if (_cache) return _cache;
+  await loadFromRedis();
+  if (_cache) return _cache;
+  // No warm data — kick the background scan so subsequent polls fill in.
+  kickBackgroundRefresh();
+  return _cache;
+}
+
+// Kick warm-restore at module load so the FIRST request a client makes
+// has a populated cache. Without this, the first /api/events SSE push
+// fires before loadFromRedis completes, ships rows:[], and the frontend
+// flashes every station to NO DATA for ~30s until the next tick.
+loadFromRedis().catch(() => undefined);
+
 /** Force-await the next scan. Used by the ai-brief endpoint, which
  *  legitimately needs fresh data regardless of cache age. */
 export async function getScanFresh(): Promise<ScanState> {

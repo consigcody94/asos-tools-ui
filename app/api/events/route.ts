@@ -1,4 +1,4 @@
-import { getScan } from "@/lib/server/scan-cache";
+import { getScan, getScanReady } from "@/lib/server/scan-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -6,6 +6,12 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const encoder = new TextEncoder();
   let timer: ReturnType<typeof setInterval> | null = null;
+
+  // Block the response until the in-process cache is warm-restored from
+  // Redis (or proven empty). This eliminates the "all stations flash NO
+  // DATA on reload" race where the first SSE frame shipped rows:[]
+  // before warm-restore finished.
+  await getScanReady();
 
   const stream = new ReadableStream({
     start(controller) {

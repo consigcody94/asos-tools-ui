@@ -186,22 +186,20 @@ export function SummaryClient() {
 
     function applyRows(rows?: ScanRow[]) {
       if (cancelled) return;
-      if (!rows) {
-        setStatusByStation((prev) => (Object.keys(prev).length === 0 ? prev : {}));
-        setScanByStation((prev) => (Object.keys(prev).length === 0 ? prev : {}));
-        return;
-      }
-      const next: Record<string, string> = {};
-      const scanRows: Record<string, ScanRow> = {};
-      for (const r of rows) {
-        if (r.station) {
-          next[r.station] = (r.status || "NO DATA").toUpperCase();
-          scanRows[r.station] = r;
-        }
-      }
-      // Skip state updates when statuses are identical to avoid re-rendering
-      // 918 globe points and the legend on every poll.
+      // An empty/undefined payload almost always means a transient
+      // upstream blip (warming, IEM rate limit, network error). It is
+      // never a signal that "all 918 stations went dark." Keep last
+      // known statuses on the client and ignore the empty pulse.
+      if (!rows || rows.length === 0) return;
+
+      // Merge into the previous map so a partial scan (e.g., AWC
+      // fallback returning a subset) doesn't blank the stations the
+      // current pulse didn't cover. ASOS METARs only update hourly.
       setStatusByStation((prev) => {
+        const next: Record<string, string> = { ...prev };
+        for (const r of rows) {
+          if (r.station) next[r.station] = (r.status || "NO DATA").toUpperCase();
+        }
         const prevKeys = Object.keys(prev);
         if (prevKeys.length === Object.keys(next).length) {
           let same = true;
@@ -212,7 +210,13 @@ export function SummaryClient() {
         }
         return next;
       });
-      setScanByStation(scanRows);
+      setScanByStation((prev) => {
+        const next: Record<string, ScanRow> = { ...prev };
+        for (const r of rows) {
+          if (r.station) next[r.station] = r;
+        }
+        return next;
+      });
     }
 
     async function refresh() {
