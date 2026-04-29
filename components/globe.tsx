@@ -65,9 +65,11 @@ export function Globe({
       if (cancelled || !containerRef.current) return;
 
       // All markers (stations + satellites + events) render via WebGL points.
-      // Replacing htmlElementsData was the perf killer: 918 DOM nodes each
-      // re-positioned per frame and re-mounted on every prop change. Points
-      // are a single instanced mesh — flat free.
+      // pointsMerge(true) batches the entire 918+12 point set into ONE
+      // instanced draw call. With merge=false we were issuing ~930 draw
+      // calls per frame, which is what made the user's CPU/GPU melt.
+      // Field accessors (lat/lng/altitude/color/size) match globe.gl's
+      // default property names so no per-point function dispatch fires.
 
       const g = new GlobeGL(containerRef.current)
         .backgroundColor("rgba(5, 8, 22, 1)")
@@ -80,27 +82,23 @@ export function Globe({
         .showAtmosphere(true)
         .atmosphereColor("#38bdf8")
         .atmosphereAltitude(0.18)
-        .pointsData(points)
-        .pointsMerge(false)
-        .pointResolution(8)
+        .pointsMerge(true)
+        .pointResolution(6)
         .pointsTransitionDuration(0)
+        .pointAltitude("altitude")
+        .pointRadius("size")
+        .pointColor("color")
+        .pointsData(points)
         .pathsData(paths)
-        .pathPoints((p: unknown) => (p as GlobePath).points)
-        .pathPointLat((p: unknown) => (p as { lat: number }).lat)
-        .pathPointLng((p: unknown) => (p as { lng: number }).lng)
-        .pathPointAlt((p: unknown) => (p as { altitude?: number }).altitude ?? 0.01)
+        .pathPoints("points")
+        .pathPointLat("lat")
+        .pathPointLng("lng")
+        .pathPointAlt("altitude")
         .pathColor((p: unknown) => (p as GlobePath).color ?? "#4da3ff")
         .pathStroke(1.2)
         .pathDashLength(0.42)
         .pathDashGap(0.18)
         .pathDashAnimateTime(9000)
-        .pointAltitude((p: unknown) => ((p as GlobePoint).altitude ?? 0.005))
-        .pointRadius(
-          (p: unknown) => ((p as GlobePoint).size ?? 0.4),
-        )
-        .pointColor(
-          (p: unknown) => ((p as GlobePoint).color ?? "#00e5ff"),
-        )
         .pointLabel(
           (p: unknown) => {
             const pt = p as GlobePoint;
