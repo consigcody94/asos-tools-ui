@@ -14,6 +14,8 @@ import { OpsBanner, type OpsStatus } from "@/components/ops-banner";
 import { KpiStrip } from "@/components/kpi-strip";
 import { SummaryClient } from "./summary-client";
 import { AiBrief } from "@/components/ai-brief";
+import { HelpOverlay } from "@/components/help-overlay";
+import { LastUpdated, RefreshTimer } from "@/components/refresh-timer";
 import { getHealth } from "@/lib/api";
 import { getScanReady } from "@/lib/server/scan-cache";
 // Importing for side-effect: starts App Insights at first render.
@@ -77,7 +79,7 @@ export default async function SummaryPage() {
   const nodesActive = counts.CLEAN + counts.RECOVERED;
 
   // "as of" relative time — purely string formatting, no client JS.
-  const asOf = formatScanAge(scannedAt);
+  void scannedAt; // kept on the server for /api/health staleness logic; UI now uses LastUpdated chip
   const throttled =
     scanDurationS !== null && scanDurationS < 12 && counts.MISSING > 200;
 
@@ -95,16 +97,11 @@ export default async function SummaryPage() {
             Network Summary
           </h1>
           <p className="mt-1 flex items-center gap-2 flex-wrap text-[0.82rem] text-[color:var(--color-fg-muted)]">
-            <span>Live ASOS network status — NOAA / FAA / NWS</span>
+            <span>Live NOAA / FAA / NWS observation network status</span>
             <span className="text-[color:var(--color-fg-dim)]">·</span>
-            <span className="font-mono text-[color:var(--color-accent)]">
-              scan {asOf}
-              {scanDurationS !== null && (
-                <span className="text-[color:var(--color-fg-dim)]">
-                  {" "}({scanDurationS.toFixed(1)}s)
-                </span>
-              )}
-            </span>
+            <LastUpdated at={initialScannedAt ?? scannedAt} />
+            <span className="text-[color:var(--color-fg-dim)]">·</span>
+            <RefreshTimer intervalSeconds={60} />
             {throttled && (
               <>
                 <span className="text-[color:var(--color-fg-dim)]">·</span>
@@ -115,7 +112,10 @@ export default async function SummaryPage() {
             )}
           </p>
         </div>
-        <AiBrief />
+        <div className="flex items-center gap-2">
+          <HelpOverlay />
+          <AiBrief />
+        </div>
       </header>
 
       <SummaryClient
@@ -137,18 +137,3 @@ export default async function SummaryPage() {
   );
 }
 
-/** Render an ISO timestamp as "Ns ago" / "Nm ago" / "Nh ago" relative
- *  to the current request time.  Server-rendered, so no client JS or
- *  hydration mismatch. */
-function formatScanAge(iso: string | null): string {
-  if (!iso) return "never";
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "never";
-  const ageMs = Date.now() - t;
-  const s = Math.max(0, Math.floor(ageMs / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  return `${h}h ago`;
-}

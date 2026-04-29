@@ -9,21 +9,14 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Globe, type GlobePoint } from "@/components/globe";
+import { Globe, type GlobePoint, type MapOverlay } from "@/components/globe";
 import { DrillPanel } from "@/components/drill-panel";
-import { ExternalLink, Flame, Map, Orbit, Play, RotateCcw, Satellite, Waves } from "lucide-react";
+import { OwlLeftSidebar, useOwlFilters, REGIONS as OWL_REGIONS } from "@/components/owl-left-sidebar";
+import { OwlRightSidebar } from "@/components/owl-right-sidebar";
+import { ExternalLink, Flame, Orbit, Satellite, Waves } from "lucide-react";
 import { STATIONS } from "@/lib/data/stations";
 
-const REGIONS = [
-  { id: "conus",  label: "CONUS",     lat: 38,    lng: -97,   alt: 2.3 },
-  { id: "ne",     label: "Northeast", lat: 42,    lng: -72,   alt: 1.1 },
-  { id: "se",     label: "Southeast", lat: 32,    lng: -84,   alt: 1.1 },
-  { id: "ctrl",   label: "Central",   lat: 41,    lng: -93,   alt: 1.1 },
-  { id: "west",   label: "West",      lat: 38,    lng: -110,  alt: 1.1 },
-  { id: "ak",     label: "Alaska",    lat: 64,    lng: -150,  alt: 1.0 },
-  { id: "hi",     label: "Hawaii",    lat: 20.7,  lng: -157,  alt: 0.7 },
-  { id: "carib",  label: "Caribbean", lat: 18,    lng: -66,   alt: 0.7 },
-];
+const REGIONS = OWL_REGIONS;
 
 // Status -> (color, point size) for the globe rendering.
 // Colours align with the global theme tokens — muted, not neon.
@@ -161,8 +154,9 @@ export function SummaryClient({
   initialStatuses,
   initialScannedAt: _initialScannedAt,
 }: SummaryClientProps = {}) {
-  const [autoRotate, setAutoRotate] = useState(false);
+  const [filters, setFilters] = useOwlFilters();
   const [focus, setFocus] = useState<{ lat: number; lng: number; alt?: number } | null>(null);
+  const [autoExpandDownTable, setAutoExpandDownTable] = useState(false);
   const [station, setStation] = useState<{
     id: string;
     lat: number;
@@ -183,9 +177,6 @@ export function SummaryClient({
   const [scanByStation, setScanByStation] = useState<Record<string, ScanRow>>({});
   const [events, setEvents] = useState<EonetEvent[]>([]);
   const [satellites, setSatellites] = useState<LiveSatellite[]>([]);
-  const [showStations, setShowStations] = useState(true);
-  const [showEvents, setShowEvents] = useState(true);
-  const [showSatellites, setShowSatellites] = useState(true);
   const [intel, setIntel] = useState<IntelSelection>(null);
 
   // Prefer the Proxmox SSE stream for scan updates. Fallback to polling
@@ -356,31 +347,49 @@ export function SummaryClient({
   }, [satellites]);
 
 
+  // Apply user-side filters: ASOS toggle, search, only-down.
+  const filteredStationPoints: GlobePoint[] = useMemo(() => {
+    if (!filters.programs.ASOS) return [];
+    let out = stationPoints;
+    if (filters.onlyDown) {
+      out = out.filter((p) => {
+        const lab = (p.label || "").toLowerCase();
+        return lab.includes("missing") || lab.includes("offline") || lab.includes("flagged") || lab.includes("intermittent");
+      });
+    }
+    if (filters.search.trim()) {
+      const q = filters.search.trim().toLowerCase();
+      out = out.filter((p) =>
+        p.station.toLowerCase().includes(q) ||
+        (p.label || "").toLowerCase().includes(q),
+      );
+    }
+    return out;
+  }, [filters.programs.ASOS, filters.onlyDown, filters.search, stationPoints]);
+
   const points: GlobePoint[] = useMemo(() => {
     return [
-      ...(showStations ? stationPoints : []),
-      ...(showEvents ? eventPoints : []),
-      ...(showSatellites ? satellitePoints : []),
+      ...filteredStationPoints,
+      ...eventPoints,
+      ...satellitePoints,
     ];
-  }, [eventPoints, satellitePoints, showEvents, showSatellites, showStations, stationPoints]);
+  }, [eventPoints, satellitePoints, filteredStationPoints]);
 
-  // Live counts for the floating overlay summary. Computed from the
-  // status map directly (source of truth) — not by re-parsing display
-  // labels, which would break the moment a station name contained "·".
-  const counts = useMemo(() => {
-    const c = { CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0, OFFLINE: 0, NO_DATA: 0 };
-    for (const s of STATIONS) {
-      const status = (statusByStation[s.id] || "NO DATA").toUpperCase();
-      if (status === "CLEAN") c.CLEAN++;
-      else if (status === "FLAGGED") c.FLAGGED++;
-      else if (status === "MISSING") c.MISSING++;
-      else if (status === "INTERMITTENT") c.INTERMITTENT++;
-      else if (status === "RECOVERED") c.RECOVERED++;
-      else if (status === "OFFLINE") c.OFFLINE++;
-      else c.NO_DATA++;
-    }
-    return c;
-  }, [statusByStation]);
+  // Timed rotation through configured regions. Pauses while a popup
+  // (drill panel) is open, mirroring the NWS Status Map convention.
+  useEffect(() => {
+    if (!filters.rotationOn) return;
+    let i = 0;
+    const id = setInterval(() => {
+      i = (i + 1) % REGIONS.length;
+      const r = REGIONS[i];
+      setFocus({ lat: r.lat, lng: r.lng, alt: r.alt });
+    }, Math.max(1, filters.rotationPauseSec) * 1000);
+    return () => clearInterval(id);
+  }, [filters.rotationOn, filters.rotationPauseSec]);
+
+  // Counts now live in the right sidebar via reduceCounts(); this memo
+  // is no longer needed at the SummaryClient level.
 
   function focusEvent(event: EonetEvent) {
     if (event.lat == null || event.lon == null) return;
@@ -397,89 +406,74 @@ export function SummaryClient({
     });
   }
 
+  // Build the Down-Sites table input from the catalog + status map.
+  const sidebarRows = useMemo(() => {
+    return STATIONS.map((s) => ({
+      station: s.id,
+      name: s.name,
+      state: s.state,
+      status: statusByStation[s.id] || "NO DATA",
+      program: "ASOS",
+    }));
+  }, [statusByStation]);
+
+  // Build map overlays from the filter state. NWS RIDGE national radar
+  // mosaic via the OpenFreeMap-style WMS tiles (CONUS-only; the layer
+  // simply isn't visible outside that footprint). RIDGE serves PNG
+  // tiles publicly with per-product naming.
+  const mapOverlays: MapOverlay[] = useMemo(() => {
+    return [
+      {
+        id: "ridge-base-reflectivity",
+        tiles: [
+          "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows?service=WMS&request=GetMap&version=1.1.1&layers=conus_bref_qcd&styles=&format=image/png&transparent=true&srs=EPSG:3857&width=256&height=256&bbox={bbox-epsg-3857}",
+        ],
+        opacity: filters.overlays.radarOpacity,
+        visible: filters.overlays.radar,
+      },
+    ];
+  }, [filters.overlays.radar, filters.overlays.radarOpacity]);
+
+  function focusStation(stationId: string) {
+    const s = STATIONS.find((x) => x.id === stationId);
+    if (!s) return;
+    setFocus({ lat: s.lat, lng: s.lon, alt: 0.7 });
+    const scan = scanByStation[stationId];
+    setStation({
+      id: stationId,
+      lat: s.lat,
+      lng: s.lon,
+      name: s.name,
+      state: s.state,
+      status: scan?.status,
+      minutesSinceLast: scan?.minutes_since_last_report,
+      lastMetar: scan?.last_metar,
+      lastValid: scan?.last_valid,
+      probableReason: scan?.probable_reason,
+    });
+  }
+
   return (
     <>
-      <div className="mb-4 -mx-4 sm:-mx-6">
-        <div className="border-y border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-2 py-2 sm:px-6 sm:py-3">
-        {/* Globe controls header */}
-        <div className="flex items-start justify-between gap-2 sm:mb-2 sm:items-center sm:flex-wrap">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 min-w-0">
-            <div className="noc-h3 m-0">Unified Command Globe</div>
-            <span className="hidden sm:inline text-[0.7rem] text-noc-dim font-mono tracking-wider leading-relaxed">
-              <span className="text-noc-cyan">{stationPoints.length}</span> sites
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-cyan">{satellites.length}</span> sats
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-amber">{events.length}</span> events
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-ok">{counts.CLEAN}</span> clean
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-amber">{counts.INTERMITTENT}</span> intermittent
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-warn">{counts.FLAGGED}</span> flagged
-              <span className="text-noc-border-strong px-1.5">|</span>
-              <span className="text-noc-crit">{counts.MISSING}</span> missing
-              {counts.RECOVERED > 0 && (
-                <>
-                  <span className="text-noc-border-strong px-1.5">|</span>
-                  <span className="text-noc-cyan">{counts.RECOVERED}</span> recovered
-                </>
-              )}
-              {counts.OFFLINE > 0 && (
-                <>
-                  <span className="text-noc-border-strong px-1.5">|</span>
-                  <span className="text-noc-dim">{counts.OFFLINE}</span> offline
-                </>
-              )}
-              {counts.NO_DATA > 0 && (
-                <>
-                  <span className="text-noc-border-strong px-1.5">|</span>
-                  <span className="text-noc-dim">{counts.NO_DATA}</span> no-data
-                </>
-              )}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              className="noc-btn flex min-h-8 items-center gap-1 px-2.5 py-1.5 text-[0.66rem] sm:px-3 sm:text-[0.7rem]"
-              onClick={() => setAutoRotate((v) => !v)}
-            >
-              <Play size={11} /> {autoRotate ? "STOP" : "ROTATE"}
-            </button>
-            <button
-              className="noc-btn flex min-h-8 items-center gap-1 px-2.5 py-1.5 text-[0.66rem] sm:px-3 sm:text-[0.7rem]"
-              onClick={() => setFocus({ lat: 38, lng: -97, alt: 2.3 })}
-            >
-              <RotateCcw size={11} /> RESET
-            </button>
-          </div>
+      <div className="grid gap-3 lg:grid-cols-[240px_1fr_300px] -mx-2 sm:-mx-4">
+        {/* Left sidebar */}
+        <div className="hidden lg:block px-2">
+          <OwlLeftSidebar
+            filters={filters}
+            setFilters={setFilters}
+            onRegion={(lat, lng, alt) => setFocus({ lat, lng, alt })}
+            onResetMap={() => setFocus({ lat: 38, lng: -97, alt: 2.3 })}
+          />
         </div>
 
-        <div className="flex gap-1.5 mb-2 overflow-x-auto pb-1 sm:gap-2">
-          <span className="noc-label flex items-center gap-1 mr-1 shrink-0">
-            <Map size={11} /> REGION:
-          </span>
-          {REGIONS.map((r) => (
-            <button
-              key={r.id}
-              className="noc-btn min-h-8 shrink-0 px-2.5 py-1.5 text-[0.64rem] sm:px-3 sm:text-[0.68rem]"
-              onClick={() => setFocus({ lat: r.lat, lng: r.lng, alt: r.alt })}
-            >
-              {r.label}
-            </button>
-          ))}
-          <span className="w-px bg-[color:var(--color-border)] mx-1 shrink-0" />
-          <LayerButton active={showStations} onClick={() => setShowStations((v) => !v)}>ASOS</LayerButton>
-          <LayerButton active={showEvents} onClick={() => setShowEvents((v) => !v)}>EONET</LayerButton>
-          <LayerButton active={showSatellites} onClick={() => setShowSatellites((v) => !v)}>SATELLITES</LayerButton>
-        </div>
-
+        {/* Map column */}
+        <div>
           <Globe
             points={points}
             paths={[]}
+            overlays={mapOverlays}
             height={720}
-            className="h-[calc(100dvh-190px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
-            autoRotate={autoRotate}
+            className="h-[calc(100dvh-200px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
             focus={focus}
             onPointClick={(p) => {
               if (p.kind === "satellite") {
@@ -510,38 +504,29 @@ export function SummaryClient({
               });
             }}
           />
+
+          <GlobeIntelPanel
+            events={events}
+            satellites={satellites}
+            selected={intel}
+            onEvent={focusEvent}
+            onSatellite={focusSatellite}
+          />
         </div>
 
-        <GlobeIntelPanel
-          events={events}
-          satellites={satellites}
-          selected={intel}
-          onEvent={focusEvent}
-          onSatellite={focusSatellite}
-        />
+        {/* Right sidebar */}
+        <div className="hidden lg:block px-2">
+          <OwlRightSidebar
+            rows={sidebarRows}
+            autoExpand={autoExpandDownTable}
+            setAutoExpand={setAutoExpandDownTable}
+            onSelect={focusStation}
+          />
+        </div>
       </div>
 
       <DrillPanel station={station} onClose={() => setStation(null)} />
     </>
-  );
-}
-
-function LayerButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`noc-btn min-h-8 shrink-0 px-2.5 py-1.5 text-[0.64rem] sm:px-3 sm:text-[0.68rem] ${active ? "noc-btn-primary" : ""}`}
-    >
-      {children}
-    </button>
   );
 }
 

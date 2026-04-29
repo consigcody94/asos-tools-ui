@@ -34,6 +34,16 @@ export interface GlobePath {
   points: { lat: number; lng: number; altitude?: number }[];
 }
 
+export interface MapOverlay {
+  id: string;
+  /** Tile URL template. {z}/{x}/{y} placeholders. */
+  tiles: string[];
+  /** 0..1, defaults 0.7 */
+  opacity?: number;
+  /** Layered above the basemap, below the points. */
+  visible: boolean;
+}
+
 interface Props {
   points: GlobePoint[];
   paths?: GlobePath[];   // ignored — kept for prop compatibility
@@ -43,6 +53,8 @@ interface Props {
   /** Bumped to recenter without re-mounting. */
   focus?: { lat: number; lng: number; alt?: number } | null;
   onPointClick?: (p: GlobePoint) => void;
+  /** Optional raster overlays (radar, etc.). Toggle by setting visible. */
+  overlays?: MapOverlay[];
 }
 
 function escapeHtml(s: string): string {
@@ -63,6 +75,7 @@ export function Globe({
   className,
   focus = null,
   onPointClick,
+  overlays = [],
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -201,6 +214,52 @@ export function Globe({
       essential: true,
     });
   }, [focus]);
+
+  // Sync raster overlays. Each overlay renders below the points layer.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      // Remove any overlays that are gone or hidden, then add/update visible ones.
+      const seen = new Set<string>();
+      for (const ov of overlays) {
+        const sid = `ov-${ov.id}`;
+        const lid = `ov-layer-${ov.id}`;
+        seen.add(sid);
+        if (!ov.visible) {
+          if (map.getLayer(lid)) map.removeLayer(lid);
+          if (map.getSource(sid)) map.removeSource(sid);
+          continue;
+        }
+        if (!map.getSource(sid)) {
+          map.addSource(sid, { type: "raster", tiles: ov.tiles, tileSize: 256 });
+          map.addLayer(
+            {
+              id: lid,
+              type: "raster",
+              source: sid,
+              paint: { "raster-opacity": ov.opacity ?? 0.7 },
+            },
+            // Insert before the points layer so points render on top.
+            map.getLayer(LAYER_ID) ? LAYER_ID : undefined,
+          );
+        } else {
+          map.setPaintProperty(lid, "raster-opacity", ov.opacity ?? 0.7);
+        }
+      }
+      // Remove overlays that disappeared from props.
+      const style = map.getStyle();
+      for (const src of Object.keys(style.sources ?? {})) {
+        if (src.startsWith("ov-") && !seen.has(src)) {
+          const lid = `ov-layer-${src.slice(3)}`;
+          if (map.getLayer(lid)) map.removeLayer(lid);
+          map.removeSource(src);
+        }
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [overlays]);
 
   return (
     <div
