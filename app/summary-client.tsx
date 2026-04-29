@@ -83,6 +83,37 @@ type IntelSelection =
   | { kind: "satellite"; satellite: LiveSatellite }
   | null;
 
+interface ProgramRow {
+  station: string;
+  name?: string;
+  state?: string;
+  lat?: number;
+  lon?: number;
+  status: string;            // raw — UP / DOWN / DEGRADED / UNKNOWN / etc.
+  reason?: string | null;
+  since?: string | null;
+  minutes_since?: number | null;
+  hours_since?: number | null;
+}
+
+const PROGRAM_COLOR = {
+  ASOS:     { UP: "#3fb27f", DEGRADED: "#e0a73a", DOWN: "#e25c6b", UNKNOWN: "#5f6f8f" },
+  RADAR:    { UP: "#5fa8e6", DEGRADED: "#e0a73a", DOWN: "#e25c6b", UNKNOWN: "#5f6f8f" },
+  BUOY:     { UP: "#3fb27f", DEGRADED: "#e0a73a", DOWN: "#e25c6b", UNKNOWN: "#5f6f8f" },
+  NWR:      { UP: "#3fb27f", DEGRADED: "#e0a73a", DOWN: "#e25c6b", UNKNOWN: "#5f6f8f" },
+  UPPERAIR: { UP: "#a78bfa", DEGRADED: "#e0a73a", DOWN: "#e25c6b", UNKNOWN: "#5f6f8f" },
+} as const;
+
+type ReducedStatusKey = keyof (typeof PROGRAM_COLOR)["ASOS"];
+
+function reduceProgramStatus(s: string): ReducedStatusKey {
+  const u = (s || "").toUpperCase();
+  if (u === "UP" || u === "CLEAN" || u === "RECOVERED") return "UP";
+  if (u === "DOWN" || u === "MISSING" || u === "OFFLINE") return "DOWN";
+  if (u === "DEGRADED" || u === "INTERMITTENT" || u === "FLAGGED") return "DEGRADED";
+  return "UNKNOWN";
+}
+
 const SATELLITE_COLOR = {
   stations: "#f8fafc",
   weather: "#4da3ff",
@@ -178,6 +209,14 @@ export function SummaryClient({
   const [events, setEvents] = useState<EonetEvent[]>([]);
   const [satellites, setSatellites] = useState<LiveSatellite[]>([]);
   const [intel, setIntel] = useState<IntelSelection>(null);
+
+  // Per-program rows from /api/programs/*. NEXRAD + Buoys carry
+  // coordinates so they render on the map; NWR + Upper-Air don't and
+  // appear list-only in the right sidebar's Down Sites table.
+  const [nexradRows, setNexradRows] = useState<ProgramRow[]>([]);
+  const [buoyRows, setBuoyRows] = useState<ProgramRow[]>([]);
+  const [nwrRows, setNwrRows] = useState<ProgramRow[]>([]);
+  const [uaRows, setUaRows] = useState<ProgramRow[]>([]);
 
   // Prefer the Proxmox SSE stream for scan updates. Fallback to polling
   // if EventSource is unavailable or the stream drops.
@@ -298,6 +337,35 @@ export function SummaryClient({
     };
   }, []);
 
+  // Poll the four secondary programs together. NEXRAD + Buoys carry
+  // coordinates and end up on the map; NWR + Upper Air don't (no
+  // public catalog with lat/lon for those at this resolution) so they
+  // appear in the Down-Sites table only.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    let cancelled = false;
+    async function pull() {
+      try {
+        const [nexr, buoy, nwr, ua] = await Promise.all([
+          fetch("/api/programs/nexrad", { signal: ctrl.signal }).then((r) => r.json()).catch(() => ({ rows: [] })),
+          fetch("/api/programs/buoys",  { signal: ctrl.signal }).then((r) => r.json()).catch(() => ({ rows: [] })),
+          fetch("/api/programs/nwr",    { signal: ctrl.signal }).then((r) => r.json()).catch(() => ({ rows: [] })),
+          fetch("/api/programs/upperair", { signal: ctrl.signal }).then((r) => r.json()).catch(() => ({ rows: [] })),
+        ]);
+        if (cancelled) return;
+        setNexradRows(nexr.rows ?? []);
+        setBuoyRows(buoy.rows ?? []);
+        setNwrRows(nwr.rows ?? []);
+        setUaRows(ua.rows ?? []);
+      } catch {
+        /* keep last-known program rows on transient blip */
+      }
+    }
+    pull();
+    const id = setInterval(pull, 5 * 60_000); // 5 min — matches NWS Status Map cadence
+    return () => { cancelled = true; clearInterval(id); ctrl.abort(); };
+  }, []);
+
   // Derive globe points from station status. Decoupled from scanByStation
   // so the array only rebuilds when a status actually changes (not on every
   // identical poll).
@@ -347,6 +415,47 @@ export function SummaryClient({
   }, [satellites]);
 
 
+  // Build NEXRAD + buoy points from the polled program rows. Each
+  // program gets its own color palette so operators can tell them
+  // apart at a glance.
+  const nexradPoints: GlobePoint[] = useMemo(() => {
+    if (!filters.programs.RADAR) return [];
+    return nexradRows
+      .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon))
+      .map((r) => {
+        const reduced = reduceProgramStatus(r.status);
+        return {
+          kind: "event",
+          station: `RADAR:${r.station}`,
+          lat: r.lat as number,
+          lng: r.lon as number,
+          altitude: 0.013,
+          color: PROGRAM_COLOR.RADAR[reduced],
+          size: reduced === "DOWN" ? 0.6 : reduced === "DEGRADED" ? 0.5 : 0.36,
+          label: `${r.station} · NEXRAD · ${reduced}${r.reason ? ` · ${r.reason}` : ""}`,
+        };
+      });
+  }, [filters.programs.RADAR, nexradRows]);
+
+  const buoyPoints: GlobePoint[] = useMemo(() => {
+    if (!filters.programs.BUOY) return [];
+    return buoyRows
+      .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon))
+      .map((r) => {
+        const reduced = reduceProgramStatus(r.status);
+        return {
+          kind: "event",
+          station: `BUOY:${r.station}`,
+          lat: r.lat as number,
+          lng: r.lon as number,
+          altitude: 0.012,
+          color: PROGRAM_COLOR.BUOY[reduced],
+          size: reduced === "DOWN" ? 0.55 : reduced === "DEGRADED" ? 0.45 : 0.32,
+          label: `${r.station} · NDBC buoy · ${reduced}${r.minutes_since != null ? ` · ${r.minutes_since}m ago` : ""}`,
+        };
+      });
+  }, [filters.programs.BUOY, buoyRows]);
+
   // Apply user-side filters: ASOS toggle, search, only-down.
   const filteredStationPoints: GlobePoint[] = useMemo(() => {
     if (!filters.programs.ASOS) return [];
@@ -370,10 +479,12 @@ export function SummaryClient({
   const points: GlobePoint[] = useMemo(() => {
     return [
       ...filteredStationPoints,
+      ...nexradPoints,
+      ...buoyPoints,
       ...eventPoints,
       ...satellitePoints,
     ];
-  }, [eventPoints, satellitePoints, filteredStationPoints]);
+  }, [eventPoints, satellitePoints, filteredStationPoints, nexradPoints, buoyPoints]);
 
   // Timed rotation through configured regions. Pauses while a popup
   // (drill panel) is open, mirroring the NWS Status Map convention.
@@ -406,16 +517,41 @@ export function SummaryClient({
     });
   }
 
-  // Build the Down-Sites table input from the catalog + status map.
+  // Build the Down-Sites table input from every enabled program.
+  // Each row carries `program` so the right sidebar groups them.
   const sidebarRows = useMemo(() => {
-    return STATIONS.map((s) => ({
-      station: s.id,
-      name: s.name,
-      state: s.state,
-      status: statusByStation[s.id] || "NO DATA",
-      program: "ASOS",
-    }));
-  }, [statusByStation]);
+    type Row = { station: string; name?: string; state?: string; status: string; program: string };
+    const out: Row[] = [];
+    if (filters.programs.ASOS) {
+      for (const s of STATIONS) {
+        out.push({
+          station: s.id, name: s.name, state: s.state,
+          status: statusByStation[s.id] || "NO DATA", program: "ASOS",
+        });
+      }
+    }
+    if (filters.programs.RADAR) {
+      for (const r of nexradRows) {
+        out.push({ station: r.station, name: r.name, state: r.state, status: r.status, program: "RADAR" });
+      }
+    }
+    if (filters.programs.BUOY) {
+      for (const r of buoyRows) {
+        out.push({ station: r.station, status: r.status, program: "BUOY" });
+      }
+    }
+    if (filters.programs.NWR) {
+      for (const r of nwrRows) {
+        out.push({ station: r.station, state: r.state, status: r.status, program: "NWR" });
+      }
+    }
+    if (filters.programs.UPPERAIR) {
+      for (const r of uaRows) {
+        out.push({ station: r.station, status: r.status, program: "UPPERAIR" });
+      }
+    }
+    return out;
+  }, [filters.programs, statusByStation, nexradRows, buoyRows, nwrRows, uaRows]);
 
   // Build map overlays from the filter state. NEXRAD reflectivity via
   // the Iowa State Mesonet tile cache (the same source the NWS internal

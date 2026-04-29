@@ -151,12 +151,28 @@ export function OwlLeftSidebar({
             checked={filters.programs.ASOS}
             onChange={(v) => patch({ programs: { ...filters.programs, ASOS: v } })}
           />
+          <ProgramCheck
+            label="RADAR (NEXRAD)"
+            checked={filters.programs.RADAR}
+            onChange={(v) => patch({ programs: { ...filters.programs, RADAR: v } })}
+          />
+          <ProgramCheck
+            label="Buoys (NDBC)"
+            checked={filters.programs.BUOY}
+            onChange={(v) => patch({ programs: { ...filters.programs, BUOY: v } })}
+          />
+          <ProgramCheck
+            label="NWR"
+            checked={filters.programs.NWR}
+            onChange={(v) => patch({ programs: { ...filters.programs, NWR: v } })}
+          />
+          <ProgramCheck
+            label="Upper Air"
+            checked={filters.programs.UPPERAIR}
+            onChange={(v) => patch({ programs: { ...filters.programs, UPPERAIR: v } })}
+          />
           <ProgramCheck label="AWIPS" disabled hint="awaiting feed" />
-          <ProgramCheck label="Buoys (NDBC)" disabled hint="connector built · wire UI" />
           <ProgramCheck label="Facility (NCO WAN)" disabled hint="awaiting feed" />
-          <ProgramCheck label="NWR" disabled hint="connector built · wire UI" />
-          <ProgramCheck label="RADAR (NEXRAD)" disabled hint="connector built · wire UI" />
-          <ProgramCheck label="Upper Air" disabled hint="connector built · wire UI" />
         </div>
       </Card>
 

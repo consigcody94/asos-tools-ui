@@ -1,6 +1,6 @@
 import { OpsBanner } from "@/components/ops-banner";
 
-export const metadata = { title: "About — O.W.L." };
+export const metadata = { title: "About — NWS Systems Status (OWL Edition)" };
 
 export default function AboutPage() {
   return (
@@ -9,10 +9,17 @@ export default function AboutPage() {
 
       <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
-          About O.W.L.
+          NWS Systems Status — OWL Edition
         </h1>
         <p className="text-[color:var(--color-fg-muted)] mt-1 text-sm">
-          Observation Watch Log — architecture, sources, and author.
+          Modernized rebuild of the NWS Systems Status console — multi-program
+          observation network (ASOS · NEXRAD · NDBC · NWR · Upper Air),
+          live status, AI shift-change brief.
+        </p>
+        <p className="mt-1 text-[0.72rem] text-[color:var(--color-fg-dim)]">
+          Originally developed inside NWS as the &quot;NWS Systems Status&quot; Apps Script
+          web app. This edition rewrites it on Next.js + MapLibre, adds public-data
+          connectors, and runs on operator-owned infrastructure.
         </p>
       </header>
 

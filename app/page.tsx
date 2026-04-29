@@ -94,10 +94,10 @@ export default async function SummaryPage() {
       <header className="mb-6 hidden items-start justify-between gap-4 flex-wrap sm:flex">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
-            Network Summary
+            NWS Systems Status <span className="text-[color:var(--color-accent)] font-mono text-base align-middle">— OWL Edition</span>
           </h1>
           <p className="mt-1 flex items-center gap-2 flex-wrap text-[0.82rem] text-[color:var(--color-fg-muted)]">
-            <span>Live NOAA / FAA / NWS observation network status</span>
+            <span>Multi-program observation network — ASOS · NEXRAD · NDBC · NWR · Upper Air</span>
             <span className="text-[color:var(--color-fg-dim)]">·</span>
             <LastUpdated at={initialScannedAt ?? scannedAt} />
             <span className="text-[color:var(--color-fg-dim)]">·</span>

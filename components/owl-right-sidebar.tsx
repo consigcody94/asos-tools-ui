@@ -5,6 +5,14 @@ import { ChevronDown, ChevronRight, AlertTriangle, Activity, RadioTower } from "
 import { reduceCounts, REDUCED_COLOR, REDUCED_LABEL, type ReducedStatus } from "@/lib/status";
 import { usePersistedState } from "@/lib/use-persisted-state";
 
+const PROGRAM_LABEL: Record<string, string> = {
+  ASOS: "ASOS",
+  RADAR: "RADAR (NEXRAD)",
+  BUOY: "Buoys (NDBC)",
+  NWR: "NWR",
+  UPPERAIR: "Upper Air",
+};
+
 interface SiteRow {
   station: string;
   name?: string;
@@ -51,13 +59,13 @@ export function OwlRightSidebar({ rows, autoExpand, setAutoExpand, onSelect }: P
 
       <Card title="Programs" icon={<RadioTower size={12} />}>
         <ul className="space-y-1 text-[0.78rem]">
-          <ProgramRow label="ASOS" enabled count={total} />
-          <ProgramRow label="AWIPS" enabled={false} hint="connector pending" />
-          <ProgramRow label="Buoys (NDBC)" enabled={false} hint="phase 2" />
-          <ProgramRow label="Facility (NCO WAN)" enabled={false} hint="phase 2" />
-          <ProgramRow label="NWR" enabled={false} hint="phase 2" />
-          <ProgramRow label="RADAR (NEXRAD)" enabled={false} hint="phase 2" />
-          <ProgramRow label="Upper Air" enabled={false} hint="phase 2" />
+          {(["ASOS", "RADAR", "BUOY", "NWR", "UPPERAIR"] as const).map((p) => {
+            const n = rows.filter((r) => r.program === p).length;
+            const label = PROGRAM_LABEL[p];
+            return <ProgramRow key={p} label={label} enabled={n > 0} count={n} hint={n === 0 ? "off" : undefined} />;
+          })}
+          <ProgramRow label="AWIPS" enabled={false} hint="awaiting feed" />
+          <ProgramRow label="Facility (NCO WAN)" enabled={false} hint="awaiting feed" />
         </ul>
       </Card>
 
@@ -82,17 +90,41 @@ export function OwlRightSidebar({ rows, autoExpand, setAutoExpand, onSelect }: P
           />
           <label htmlFor="auto-expand" className="cursor-pointer">Auto Expand (sync with rotation)</label>
         </div>
-        <ProgramGroup label="ASOS" rows={downRows} forceOpen={autoExpand} onSelect={onSelect} emptyText="No down ASOS sites." />
+        {(["ASOS", "RADAR", "BUOY", "NWR", "UPPERAIR"] as const).map((p) => {
+          const subset = downRows.filter((r) => r.program === p);
+          if (subset.length === 0) return null;
+          return (
+            <ProgramGroup
+              key={`down-${p}`}
+              label={PROGRAM_LABEL[p]}
+              rows={subset}
+              forceOpen={autoExpand}
+              onSelect={onSelect}
+              emptyText={`No down ${PROGRAM_LABEL[p]} sites.`}
+            />
+          );
+        })}
+        {downRows.length === 0 && (
+          <p className="text-[0.7rem] text-[color:var(--color-fg-muted)]">No down sites across enabled programs.</p>
+        )}
       </Card>
 
       {degradedRows.length > 0 && (
         <Card title={`Degraded Sites (${degradedRows.length})`} icon={<AlertTriangle size={12} className="text-[color:var(--color-warn)]" />}>
-          <ProgramGroup label="ASOS" rows={degradedRows.slice(0, 50)} forceOpen={autoExpand} onSelect={onSelect} emptyText="None." />
-          {degradedRows.length > 50 && (
-            <p className="mt-1 text-[0.66rem] text-[color:var(--color-fg-muted)]">
-              Showing first 50 of {degradedRows.length}. Use search or filter to narrow.
-            </p>
-          )}
+          {(["ASOS", "RADAR", "BUOY", "NWR", "UPPERAIR"] as const).map((p) => {
+            const subset = degradedRows.filter((r) => r.program === p).slice(0, 50);
+            if (subset.length === 0) return null;
+            return (
+              <ProgramGroup
+                key={`deg-${p}`}
+                label={PROGRAM_LABEL[p]}
+                rows={subset}
+                forceOpen={autoExpand}
+                onSelect={onSelect}
+                emptyText="None."
+              />
+            );
+          })}
         </Card>
       )}
     </aside>
