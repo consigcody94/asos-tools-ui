@@ -44,24 +44,24 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
     ? `${AZURE_ENDPOINT}/openai/deployments/${encodeURIComponent(DEPLOYMENT)}/chat/completions?api-version=${API_VERSION}`
     : `${OPENAI_BASE}/chat/completions`;
 
-  // gpt-5 family models are reasoning models — they spend tokens on
-  // internal thinking BEFORE emitting visible content.  We need a
-  // generous max_completion_tokens budget AND an explicit low
-  // reasoning_effort so the budget isn't fully consumed by reasoning.
-  // The non-reasoning models (gpt-4o etc.) silently ignore these
-  // extra fields.
+  // gpt-5 reasoning models accept `reasoning_effort` and require
+  // `max_completion_tokens`. Everything else (gpt-4o, Ollama, Azure
+  // OpenAI 4.x, Anthropic via gateways, vLLM, etc.) takes `max_tokens`
+  // and silently 400s on `reasoning_effort` — so gate those fields on
+  // the model name.
+  const isGpt5 = DEPLOYMENT.startsWith("gpt-5");
   const body: Record<string, unknown> = {
     messages,
     model: DEPLOYMENT,
-    max_completion_tokens: opts.maxTokens ?? 4000,
-    reasoning_effort: opts.reasoningEffort ?? "low",
   };
-  if (azure) delete body.model;
-  // gpt-5 series doesn't accept temperature param; only set when
-  // we're talking to a non-reasoning model.
-  if (!DEPLOYMENT.startsWith("gpt-5") && opts.temperature !== undefined) {
-    body.temperature = opts.temperature;
+  if (isGpt5) {
+    body.max_completion_tokens = opts.maxTokens ?? 4000;
+    body.reasoning_effort = opts.reasoningEffort ?? "low";
+  } else {
+    body.max_tokens = opts.maxTokens ?? 4000;
+    if (opts.temperature !== undefined) body.temperature = opts.temperature;
   }
+  if (azure) delete body.model;
 
   const t0 = Date.now();
   try {
@@ -78,7 +78,8 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
     trackMetric("owl.ai.chat.latency_ms", dt);
     if (!r.ok) {
       const txt = await r.text().catch(() => "");
-      trackException(new Error(`Azure OpenAI ${r.status}: ${txt.slice(0, 200)}`));
+      const provider = azure ? "Azure OpenAI" : "OpenAI-compat";
+      trackException(new Error(`${provider} ${r.status}: ${txt.slice(0, 200)}`));
       return `AI Brief temporarily unavailable (status ${r.status}).`;
     }
     const data = await r.json();
