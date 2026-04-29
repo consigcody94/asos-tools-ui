@@ -95,6 +95,45 @@ const SATELLITE_COLOR = {
   resource: "#3fb27f",
 } as const;
 
+// Direct embeddable URL for the live feed of a satellite.
+//   - GOES east/west: NESDIS GeoColor GIF (already direct CDN; refreshes ~10 min)
+//   - VIIRS / MODIS polar sats: NASA GIBS WMS GetMap centered on the current
+//     sub-point. No auth, public, returns today's swath imagery.
+//   - Anything else (ISS, Landsat, Sentinel): null — we render a position-only
+//     panel and link out as a secondary action.
+function satelliteLiveImage(
+  sat: LiveSatellite,
+): { url: string; caption: string; layer?: string } | null {
+  if (sat.id === "goes-19" && sat.imagery_url) {
+    return { url: sat.imagery_url, caption: "NOAA GOES-19 GeoColor (CONUS)" };
+  }
+  if (sat.id === "goes-18" && sat.imagery_url) {
+    return { url: sat.imagery_url, caption: "NOAA GOES-18 GeoColor (Full Disk)" };
+  }
+  const gibsLayer: Record<string, string> = {
+    terra: "MODIS_Terra_CorrectedReflectance_TrueColor",
+    aqua: "MODIS_Aqua_CorrectedReflectance_TrueColor",
+    "suomi-npp": "VIIRS_SNPP_CorrectedReflectance_TrueColor",
+    "noaa-20-jpss-1": "VIIRS_NOAA20_CorrectedReflectance_TrueColor",
+    "noaa-21-jpss-2": "VIIRS_NOAA21_CorrectedReflectance_TrueColor",
+  };
+  const layer = gibsLayer[sat.id];
+  if (!layer) return null;
+  // 30 deg half-window around the sub-point. NASA GIBS yesterday is most
+  // reliable because today's swath isn't always processed yet.
+  const day = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
+  const half = 30;
+  const minLat = Math.max(-90, sat.lat - half);
+  const maxLat = Math.min(90, sat.lat + half);
+  let minLon = sat.lon - half;
+  let maxLon = sat.lon + half;
+  if (minLon < -180) minLon += 360;
+  if (maxLon > 180) maxLon -= 360;
+  const bbox = `${minLat.toFixed(2)},${minLon.toFixed(2)},${maxLat.toFixed(2)},${maxLon.toFixed(2)}`;
+  const url = `https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=${layer}&STYLES=&FORMAT=image/jpeg&SRS=EPSG:4326&WIDTH=720&HEIGHT=540&BBOX=${bbox}&TIME=${day}`;
+  return { url, caption: `NASA GIBS · ${layer.replace(/_/g, " ")} · ${day}`, layer };
+}
+
 function eventColor(event: EonetEvent): string {
   if (event.category_id.includes("wild")) return "#e0a73a";
   if (event.category_id.includes("storm") || event.category_id.includes("flood")) return "#5fa8e6";
@@ -573,6 +612,7 @@ function IntelDetail({ selected }: { selected: IntelSelection }) {
   }
 
   const sat = selected.satellite;
+  const live = satelliteLiveImage(sat);
   return (
     <div className="border border-[color:var(--color-border)] rounded bg-[color:var(--color-bg)] p-3">
       <div className="flex items-start justify-between gap-3 mb-2">
@@ -582,6 +622,26 @@ function IntelDetail({ selected }: { selected: IntelSelection }) {
         </div>
         <Satellite size={18} className="text-[color:var(--color-accent)] shrink-0" />
       </div>
+
+      {live ? (
+        <figure className="mb-3 border border-[color:var(--color-border)] rounded overflow-hidden bg-black">
+          <img
+            src={live.url}
+            alt={`${sat.name} live imagery`}
+            loading="lazy"
+            className="w-full h-auto block"
+          />
+          <figcaption className="px-2 py-1 text-[0.62rem] text-[color:var(--color-fg-muted)] flex items-center justify-between gap-2 bg-[color:var(--color-surface)]">
+            <span className="truncate">{live.caption}</span>
+            <span className="font-mono shrink-0">{new Date().toUTCString().slice(17, 22)}Z</span>
+          </figcaption>
+        </figure>
+      ) : (
+        <div className="mb-3 border border-dashed border-[color:var(--color-border)] rounded px-2 py-3 text-[0.7rem] text-[color:var(--color-fg-muted)]">
+          No direct live tile for this platform. Position-only telemetry shown below.
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2 mb-3">
         <MiniMetric label="NORAD" value={String(sat.norad_id)} />
         <MiniMetric label="Altitude" value={`${sat.altitude_km.toLocaleString()} km`} />
@@ -591,12 +651,12 @@ function IntelDetail({ selected }: { selected: IntelSelection }) {
         <MiniMetric label="Lat / Lon" value={`${sat.lat.toFixed(2)}, ${sat.lon.toFixed(2)}`} />
       </div>
       <div className="flex flex-wrap gap-2">
-        <a href={sat.public_url} target="_blank" rel="noopener noreferrer" className="noc-btn text-[0.72rem] py-1.5">
-          Mission <ExternalLink size={11} />
+        <a href={sat.public_url} target="_blank" rel="noopener noreferrer" className="noc-btn text-[0.66rem] py-1">
+          Mission page <ExternalLink size={10} />
         </a>
-        {sat.imagery_url && (
-          <a href={sat.imagery_url} target="_blank" rel="noopener noreferrer" className="noc-btn noc-btn-primary text-[0.72rem] py-1.5">
-            Imagery <ExternalLink size={11} />
+        {sat.imagery_url && !live && (
+          <a href={sat.imagery_url} target="_blank" rel="noopener noreferrer" className="noc-btn text-[0.66rem] py-1">
+            Imagery portal <ExternalLink size={10} />
           </a>
         )}
       </div>

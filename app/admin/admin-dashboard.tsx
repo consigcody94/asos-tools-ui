@@ -8,8 +8,17 @@
  *    4. Operator controls: metrics endpoint + manual cache flush
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { HealthSnapshot } from "@/lib/api";
+
+interface AuditEvent {
+  id: number;
+  created_at: string;
+  actor: string;
+  action: string;
+  target: string | null;
+  metadata: Record<string, unknown>;
+}
 
 interface SourceRecord {
   id?: string;
@@ -29,7 +38,7 @@ interface Props {
 }
 
 export function AdminDashboard({ health, sources }: Props) {
-  const [tab, setTab] = useState<"health" | "sources" | "ops">("health");
+  const [tab, setTab] = useState<"health" | "sources" | "ops" | "audit">("health");
 
   return (
     <>
@@ -37,11 +46,13 @@ export function AdminDashboard({ health, sources }: Props) {
         <SubTab cur={tab} k="health"  set={setTab}>Scheduler &amp; Health</SubTab>
         <SubTab cur={tab} k="sources" set={setTab}>Source Registry <span className="ml-1 text-noc-cyan">{sources.length}</span></SubTab>
         <SubTab cur={tab} k="ops" set={setTab}>Operations</SubTab>
+        <SubTab cur={tab} k="audit" set={setTab}>Audit Log</SubTab>
       </div>
 
       {tab === "health"  && <HealthView  health={health} />}
       {tab === "sources" && <SourcesView sources={sources} />}
       {tab === "ops" && <OperationsView />}
+      {tab === "audit" && <AuditView />}
     </>
   );
 }
@@ -49,8 +60,8 @@ export function AdminDashboard({ health, sources }: Props) {
 function SubTab({
   cur, k, set, children,
 }: {
-  cur: string; k: "health" | "sources" | "ops";
-  set: (k: "health" | "sources" | "ops") => void;
+  cur: string; k: "health" | "sources" | "ops" | "audit";
+  set: (k: "health" | "sources" | "ops" | "audit") => void;
   children: React.ReactNode;
 }) {
   const active = cur === k;
@@ -248,6 +259,157 @@ function OperationsView() {
         </p>
         <a href="/api/metrics" target="_blank" rel="noopener noreferrer" className="noc-btn">Open /api/metrics</a>
       </div>
+
+      <div className="noc-panel md:col-span-2">
+        <AnomalyCard />
+      </div>
+    </div>
+  );
+}
+
+interface AnomalyFinding {
+  station: string;
+  state?: string;
+  severity: number;
+  z: number;
+  current_minutes: number;
+  baseline_mean: number;
+  baseline_std: number;
+  detected_at: string;
+}
+
+function AnomalyCard() {
+  const [data, setData] = useState<{ findings: AnomalyFinding[]; tick_at: string | null } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function refresh() {
+    setErr(null);
+    try {
+      const res = await fetch("/api/admin/anomalies", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json());
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="noc-h3">Anomaly Review Queue</div>
+        <button className="noc-btn" onClick={refresh}>Refresh</button>
+      </div>
+      <p className="text-sm text-noc-muted mb-3">
+        Per-station rolling z-score on minutes-since-last-report.
+        Stations whose lateness suddenly spikes ≥3σ above their own normal show up here.
+      </p>
+      {err && <div className="text-noc-crit text-sm mb-2">{err}</div>}
+      {!data && !err && <div className="text-sm text-noc-muted">Loading…</div>}
+      {data && data.findings.length === 0 && (
+        <div className="text-sm text-noc-muted">
+          No outlier stations right now. Tick last ran {data.tick_at ?? "never"}.
+        </div>
+      )}
+      {data && data.findings.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-left text-noc-muted">
+              <tr>
+                <th className="py-1.5 pr-3">Station</th>
+                <th className="py-1.5 pr-3">State</th>
+                <th className="py-1.5 pr-3">z</th>
+                <th className="py-1.5 pr-3">Current min</th>
+                <th className="py-1.5 pr-3">Baseline (μ ± σ)</th>
+                <th className="py-1.5">Detected</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {data.findings.map((f) => (
+                <tr key={`${f.station}-${f.detected_at}`} className="border-t border-noc-border/40">
+                  <td className="py-1.5 pr-3 text-noc-cyan">{f.station}</td>
+                  <td className="py-1.5 pr-3">{f.state ?? "—"}</td>
+                  <td className="py-1.5 pr-3">{f.z.toFixed(2)}</td>
+                  <td className="py-1.5 pr-3">{f.current_minutes}</td>
+                  <td className="py-1.5 pr-3 text-noc-muted">
+                    {f.baseline_mean.toFixed(1)} ± {f.baseline_std.toFixed(1)}
+                  </td>
+                  <td className="py-1.5 text-noc-muted">{f.detected_at.replace("T", " ").slice(0, 19)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ───────────────────── Audit ─────────────────────
+function AuditView() {
+  const [rows, setRows] = useState<AuditEvent[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function refresh() {
+    setErr(null);
+    try {
+      const res = await fetch("/api/admin/audit?limit=200", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { events: AuditEvent[] };
+      setRows(data.events);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="noc-panel">
+      <div className="flex items-center justify-between mb-3">
+        <div className="noc-h3">Operator Audit Log</div>
+        <button className="noc-btn" onClick={refresh}>Refresh</button>
+      </div>
+      {err && <div className="text-noc-crit text-sm mb-2">{err}</div>}
+      {!rows && !err && <div className="text-sm text-noc-muted">Loading…</div>}
+      {rows && rows.length === 0 && (
+        <div className="text-sm text-noc-muted">No operator events recorded yet. Trigger one (e.g. flush the scan cache) and it will appear here.</div>
+      )}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-left text-noc-muted">
+              <tr>
+                <th className="py-1.5 pr-3">When (UTC)</th>
+                <th className="py-1.5 pr-3">Actor</th>
+                <th className="py-1.5 pr-3">Action</th>
+                <th className="py-1.5 pr-3">Target</th>
+                <th className="py-1.5">Metadata</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-noc-border/40">
+                  <td className="py-1.5 pr-3 text-noc-muted whitespace-nowrap">{r.created_at.replace("T", " ").slice(0, 19)}</td>
+                  <td className="py-1.5 pr-3">{r.actor}</td>
+                  <td className="py-1.5 pr-3 text-noc-cyan">{r.action}</td>
+                  <td className="py-1.5 pr-3">{r.target ?? "—"}</td>
+                  <td className="py-1.5 text-noc-muted">{Object.keys(r.metadata).length === 0 ? "—" : JSON.stringify(r.metadata)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
