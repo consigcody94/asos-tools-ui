@@ -13,8 +13,8 @@
   "dependencies": {
     "applicationinsights": "^3.14.0",
     "clsx": "2.1.1",
-    "globe.gl": "2.41.4",
     "lucide-react": "0.469.0",
+    "maplibre-gl": "^5.24.0",
     "next": "16.2.4",
     "pg": "^8.20.0",
     "react": "19.2.0",
