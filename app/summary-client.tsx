@@ -187,17 +187,33 @@ export function SummaryClient() {
 
     function applyRows(rows?: ScanRow[]) {
       if (cancelled) return;
-      if (!rows) { setStatusByStation({}); setScanByStation({}); return; }
-        const next: Record<string, string> = {};
-        const scanRows: Record<string, ScanRow> = {};
-        for (const r of rows) {
-          if (r.station) {
-            next[r.station] = (r.status || "NO DATA").toUpperCase();
-            scanRows[r.station] = r;
-          }
+      if (!rows) {
+        setStatusByStation((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+        setScanByStation((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+        return;
+      }
+      const next: Record<string, string> = {};
+      const scanRows: Record<string, ScanRow> = {};
+      for (const r of rows) {
+        if (r.station) {
+          next[r.station] = (r.status || "NO DATA").toUpperCase();
+          scanRows[r.station] = r;
         }
-        setStatusByStation(next);
-        setScanByStation(scanRows);
+      }
+      // Skip state updates when statuses are identical to avoid re-rendering
+      // 918 globe points and the legend on every poll.
+      setStatusByStation((prev) => {
+        const prevKeys = Object.keys(prev);
+        if (prevKeys.length === Object.keys(next).length) {
+          let same = true;
+          for (const k of prevKeys) {
+            if (prev[k] !== next[k]) { same = false; break; }
+          }
+          if (same) return prev;
+        }
+        return next;
+      });
+      setScanByStation(scanRows);
     }
 
     async function refresh() {
@@ -270,11 +286,12 @@ export function SummaryClient() {
     };
   }, []);
 
-  // Derive globe points from station status + live hazard/orbit layers.
+  // Derive globe points from station status. Decoupled from scanByStation
+  // so the array only rebuilds when a status actually changes (not on every
+  // identical poll).
   const stationPoints: GlobePoint[] = useMemo(() => {
     return STATIONS.map((s) => {
-      const scan = scanByStation[s.id];
-      const status = (scan?.status || statusByStation[s.id] || "NO DATA").toUpperCase();
+      const status = (statusByStation[s.id] || "NO DATA").toUpperCase();
       const viz = STATUS_VIZ[status] || DEFAULT_VIZ;
       const shortName = s.name.length > 24 ? s.name.slice(0, 22) + "…" : s.name;
       const spread = stationSpread(s.id, s.lat);
@@ -289,7 +306,7 @@ export function SummaryClient() {
         label: `${shortName} · ${s.state} · ${status}`,
       };
     });
-  }, [scanByStation, statusByStation]);
+  }, [statusByStation]);
 
   const eventPoints: GlobePoint[] = useMemo(() => {
     return events.map((event) => ({

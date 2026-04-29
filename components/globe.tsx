@@ -64,8 +64,10 @@ export function Globe({
       const { default: GlobeGL } = await import("globe.gl");
       if (cancelled || !containerRef.current) return;
 
-      const stationMarkers = points.filter((p) => p.kind === "station");
-      const pointMarkers = points.filter((p) => p.kind !== "station");
+      // All markers (stations + satellites + events) render via WebGL points.
+      // Replacing htmlElementsData was the perf killer: 918 DOM nodes each
+      // re-positioned per frame and re-mounted on every prop change. Points
+      // are a single instanced mesh — flat free.
 
       const g = new GlobeGL(containerRef.current)
         .backgroundColor("rgba(5, 8, 22, 1)")
@@ -78,34 +80,10 @@ export function Globe({
         .showAtmosphere(true)
         .atmosphereColor("#38bdf8")
         .atmosphereAltitude(0.18)
-        .pointsData(pointMarkers)
-        .htmlElementsData(stationMarkers)
-        .htmlLat((p: unknown) => (p as GlobePoint).lat)
-        .htmlLng((p: unknown) => (p as GlobePoint).lng)
-        .htmlAltitude((p: unknown) => (p as GlobePoint).altitude ?? 0.012)
-        .htmlElement((p: unknown) => {
-          const pt = p as GlobePoint;
-          const el = document.createElement("button");
-          el.type = "button";
-          el.title = pt.label || pt.station;
-          el.setAttribute("aria-label", pt.label || pt.station);
-          el.style.cssText = `
-            width: 13px;
-            height: 13px;
-            border: 1px solid rgba(241,245,249,0.72);
-            border-radius: 2px;
-            background: ${pt.color ?? "#4da3ff"};
-            box-shadow: 0 0 0 1px rgba(11,18,32,0.85), 0 2px 8px rgba(0,0,0,0.45);
-            transform: translate(-50%, -50%) rotate(45deg);
-            cursor: pointer;
-            padding: 0;
-          `;
-          el.addEventListener("click", (event) => {
-            event.stopPropagation();
-            onPointClick?.(pt);
-          });
-          return el;
-        })
+        .pointsData(points)
+        .pointsMerge(false)
+        .pointResolution(8)
+        .pointsTransitionDuration(0)
         .pathsData(paths)
         .pathPoints((p: unknown) => (p as GlobePath).points)
         .pathPointLat((p: unknown) => (p as { lat: number }).lat)
@@ -179,12 +157,8 @@ export function Globe({
   useEffect(() => {
     const g = globeRef.current as {
       pointsData: (d: GlobePoint[]) => unknown;
-      htmlElementsData: (d: GlobePoint[]) => unknown;
     } | null;
-    if (g && loaded) {
-      g.pointsData(points.filter((p) => p.kind !== "station"));
-      g.htmlElementsData(points.filter((p) => p.kind === "station"));
-    }
+    if (g && loaded) g.pointsData(points);
   }, [points, loaded]);
 
   useEffect(() => {
