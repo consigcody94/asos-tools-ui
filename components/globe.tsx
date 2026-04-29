@@ -14,6 +14,15 @@
 
 import { useEffect, useRef, useState } from "react";
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export interface GlobePoint {
   lat: number;
   lng: number;
@@ -54,9 +63,17 @@ export function Globe({
   const containerRef = useRef<HTMLDivElement>(null);
   const globeRef = useRef<unknown>(null);
   const [loaded, setLoaded] = useState(false);
+  // Globe.gl registers .onPointClick once at mount; without a ref the
+  // callback closes over the initial (empty) state of `satellites` and
+  // `events`, so clicks return undefined after async fetches resolve.
+  const clickRef = useRef<typeof onPointClick>(onPointClick);
+  useEffect(() => {
+    clickRef.current = onPointClick;
+  }, [onPointClick]);
 
   useEffect(() => {
     let cancelled = false;
+    let onResize: (() => void) | null = null;
     const el = containerRef.current;
     if (!el) return;
 
@@ -112,14 +129,14 @@ export function Globe({
               padding: 6px 10px;
               color: #f1f5f9;">
               <span style="color:#00e5ff;font-weight:700;font-family:'Share Tech Mono',monospace;letter-spacing:0.08em;">
-                ${pt.station}
+                ${escapeHtml(pt.station)}
               </span>
-              ${pt.label ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px;">${pt.label}</div>` : ""}
+              ${pt.label ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px;">${escapeHtml(pt.label)}</div>` : ""}
             </div>`;
           },
         )
         .onPointClick(
-          (p: unknown) => onPointClick?.(p as GlobePoint),
+          (p: unknown) => clickRef.current?.(p as GlobePoint),
         )
         .pointOfView({ lat: 38, lng: -97, altitude: 2.3 }, 0)
         .width(containerRef.current.clientWidth)
@@ -134,20 +151,17 @@ export function Globe({
       globeRef.current = g;
       setLoaded(true);
 
-      const onResize = () => {
+      onResize = () => {
         if (!containerRef.current) return;
         g.width(containerRef.current.clientWidth);
         g.height(containerRef.current.clientHeight || height);
       };
       window.addEventListener("resize", onResize);
-
-      return () => {
-        window.removeEventListener("resize", onResize);
-      };
     })();
 
     return () => {
       cancelled = true;
+      if (onResize) window.removeEventListener("resize", onResize);
       // globe.gl has no destroy method, but the canvas + Three resources
       // get garbage collected when the container is removed.
     };

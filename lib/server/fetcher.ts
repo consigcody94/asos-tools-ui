@@ -75,6 +75,7 @@ export const HOST_LIMITS: Record<string, HostLimit> = {
   "cdn.star.nesdis.noaa.gov":       { capacity: 10, refillPerSec: 10,   note: "NESDIS CDN"                       },
   "eonet.gsfc.nasa.gov":            { capacity: 2,  refillPerSec: 1,    note: "NASA EONET API"                   },
   "celestrak.org":                  { capacity: 2,  refillPerSec: 1,    note: "CelesTrak GP orbital elements"    },
+  "tle.ivanstanojevic.me":          { capacity: 12, refillPerSec: 6,    note: "free TLE mirror; concurrent fetches OK" },
 
   // RSS / news feeds. Generally a single call per feed per scan.
   "www.noaa.gov":                   { capacity: 1,  refillPerSec: 1,    note: "RSS; 1 req/s"                     },

@@ -33,6 +33,7 @@ const STATUS_VIZ: Record<string, { color: string; size: number }> = {
   INTERMITTENT: { color: "#c48828", size: 0.40 },
   FLAGGED:      { color: "#e0a73a", size: 0.50 },
   MISSING:      { color: "#e25c6b", size: 0.60 },
+  OFFLINE:      { color: "#475569", size: 0.25 },
   "NO DATA":    { color: "#5f6f8f", size: 0.30 },
 };
 const DEFAULT_VIZ = STATUS_VIZ.CLEAN;
@@ -121,14 +122,18 @@ function satelliteLiveImage(
   if (!layer) return null;
   // 30 deg half-window around the sub-point. NASA GIBS yesterday is most
   // reliable because today's swath isn't always processed yet.
+  // GIBS WMS does not support antimeridian-crossing bboxes (minLon must
+  // be < maxLon and both within [-180,180]), so when the sub-point is
+  // close enough to ±180 that the box would wrap, we slide the window
+  // to stay on one side of the antimeridian.
   const day = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
   const half = 30;
   const minLat = Math.max(-90, sat.lat - half);
   const maxLat = Math.min(90, sat.lat + half);
   let minLon = sat.lon - half;
   let maxLon = sat.lon + half;
-  if (minLon < -180) minLon += 360;
-  if (maxLon > 180) maxLon -= 360;
+  if (minLon < -180) { minLon = -180; maxLon = -180 + 2 * half; }
+  if (maxLon > 180)  { maxLon = 180;  minLon = 180  - 2 * half; }
   const bbox = `${minLat.toFixed(2)},${minLon.toFixed(2)},${maxLat.toFixed(2)},${maxLon.toFixed(2)}`;
   const url = `https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=${layer}&STYLES=&FORMAT=image/jpeg&SRS=EPSG:4326&WIDTH=720&HEIGHT=540&BBOX=${bbox}&TIME=${day}`;
   return { url, caption: `NASA GIBS · ${layer.replace(/_/g, " ")} · ${day}`, layer };
@@ -236,10 +241,16 @@ export function SummaryClient() {
         } catch { /* ignore malformed event */ }
       });
       es.onerror = () => {
+        // EventSource fires onerror on each transient network blip. We
+        // close it and start a single polling fallback. Without the
+        // `interval` guard, every reconnect attempt would stack another
+        // setInterval and quickly DDoS our own /api/scan-results.
         es?.close();
         es = null;
-        refresh();
-        interval = setInterval(refresh, 60_000);
+        if (!interval) {
+          refresh();
+          interval = setInterval(refresh, 60_000);
+        }
       };
     } else {
       refresh();
@@ -360,24 +371,23 @@ export function SummaryClient() {
     ];
   }, [eventPoints, satellitePoints, showEvents, showSatellites, showStations, stationPoints]);
 
-  // Live counts for the floating overlay summary. We separate every
-  // status the classifier can emit so the displayed numbers always sum
-  // to the station total. Previously we collapsed everything that
-  // wasn't CLEAN/FLAGGED/MISSING into "OTHER" and never showed it.
+  // Live counts for the floating overlay summary. Computed from the
+  // status map directly (source of truth) — not by re-parsing display
+  // labels, which would break the moment a station name contained "·".
   const counts = useMemo(() => {
     const c = { CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0, OFFLINE: 0, NO_DATA: 0 };
-    for (const p of stationPoints) {
-      const s = (p.label || "").split("·").pop()?.trim() || "";
-      if (s === "CLEAN") c.CLEAN++;
-      else if (s === "FLAGGED") c.FLAGGED++;
-      else if (s === "MISSING") c.MISSING++;
-      else if (s === "INTERMITTENT") c.INTERMITTENT++;
-      else if (s === "RECOVERED") c.RECOVERED++;
-      else if (s === "OFFLINE") c.OFFLINE++;
+    for (const s of STATIONS) {
+      const status = (statusByStation[s.id] || "NO DATA").toUpperCase();
+      if (status === "CLEAN") c.CLEAN++;
+      else if (status === "FLAGGED") c.FLAGGED++;
+      else if (status === "MISSING") c.MISSING++;
+      else if (status === "INTERMITTENT") c.INTERMITTENT++;
+      else if (status === "RECOVERED") c.RECOVERED++;
+      else if (status === "OFFLINE") c.OFFLINE++;
       else c.NO_DATA++;
     }
     return c;
-  }, [stationPoints]);
+  }, [statusByStation]);
 
   function focusEvent(event: EonetEvent) {
     if (event.lat == null || event.lon == null) return;

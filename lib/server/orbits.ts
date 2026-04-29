@@ -113,7 +113,10 @@ async function fetchTle(norad: number): Promise<TleApiResp | null> {
   } catch (err) {
     console.warn(`[orbits] TLE fetch failed for NORAD ${norad}:`, (err as Error).message);
   }
-  // Serve stale rather than empty if we have it.
+  // Serve stale forever rather than blank: TLEs degrade slowly (km-scale
+  // error per day for LEO, even slower for GEO), so a several-day-old
+  // element set is far better operator UX than an empty satellite layer
+  // when the upstream mirror has a hiccup.
   return cached ? cached.tle : null;
 }
 

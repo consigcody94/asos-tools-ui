@@ -38,12 +38,15 @@ export default function AboutPage() {
         <section className="noc-panel">
           <div className="noc-h3 mb-3">Stack</div>
           <ul className="text-sm text-[color:var(--color-fg)] space-y-1.5">
-            <Li label="Frontend">Next.js 16 / React 19 / Tailwind 4 on Azure Container Apps</Li>
+            <Li label="Frontend">Next.js 16 / React 19 / Tailwind 4</Li>
             <Li label="Backend">Self-hosted — all data sources in <code>lib/server/*</code> + Next.js API routes</Li>
             <Li label="Globe">Globe.gl + Three.js (NASA Blue Marble texture)</Li>
-            <Li label="Telemetry">Azure Application Insights + Log Analytics</Li>
-            <Li label="AI Brief">Azure OpenAI (live scan + active SIGMETs)</Li>
-            <Li label="Secrets">Azure Key Vault + Managed Identity (Entra ID)</Li>
+            <Li label="Hosting">Proxmox LXC behind Caddy + Cloudflare Tunnel</Li>
+            <Li label="State">Postgres (audit, RBAC) + Redis (warm scan cache)</Li>
+            <Li label="Telemetry">Prometheus + Grafana (sub-pathed at <code>/grafana</code>)</Li>
+            <Li label="Auth">Authelia SSO via Caddy <code>forward_auth</code></Li>
+            <Li label="AI Brief">OpenAI-compatible (Ollama / vLLM / OpenAI / Azure OpenAI)</Li>
+            <Li label="Secrets">age-encrypted env file decrypted at boot via systemd</Li>
           </ul>
         </section>
 
@@ -55,6 +58,7 @@ export default function AboutPage() {
             <StatusRow label="INTERMITTENT" tone="warn" desc="Mixed reporting — gaps but not silent" />
             <StatusRow label="FLAGGED"      tone="warn" desc="$ remark present in latest METAR (sensor-degraded)" />
             <StatusRow label="MISSING"      tone="crit" desc="No METAR received in the last 2 h" />
+            <StatusRow label="OFFLINE"      tone="dim"  desc="Decommissioned in catalog (≥14 d silent)" />
             <StatusRow label="NO DATA"      tone="dim"  desc="Awaiting first scan — neutral" />
           </ul>
         </section>

@@ -26,6 +26,7 @@ interface Counts {
   MISSING: number;
   INTERMITTENT: number;
   RECOVERED: number;
+  OFFLINE: number;
   "NO DATA": number;
 }
 
@@ -34,7 +35,7 @@ export default async function SummaryPage() {
   // we render a degraded but functional shell rather than 500-ing.
   let counts: Counts = {
     CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0,
-    "NO DATA": 0,
+    OFFLINE: 0, "NO DATA": 0,
   };
   let status: OpsStatus = "unknown";
   let scannedAt: string | null = null;
@@ -54,7 +55,8 @@ export default async function SummaryPage() {
 
   const total =
     counts.CLEAN + counts.FLAGGED + counts.MISSING +
-    counts.INTERMITTENT + counts.RECOVERED + counts["NO DATA"];
+    counts.INTERMITTENT + counts.RECOVERED + counts.OFFLINE +
+    counts["NO DATA"];
   const nodesActive = counts.CLEAN + counts.RECOVERED;
 
   // "as of" relative time — purely string formatting, no client JS.
