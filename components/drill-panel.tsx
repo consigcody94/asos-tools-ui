@@ -2,8 +2,9 @@
 
 /** Station drill panel — opens when a globe point is clicked.
  *  Shows: FAA WeatherCams + NWS RIDGE NEXRAD loop + NESDIS GOES loop
- *  + Site Hazards (USGS + NHC + NDBC + FAA NOTAM). All fetched from
- *  this app's own /api routes — zero external dependency at runtime.
+ *  + Site Hazards (USGS + NHC + NDBC + NOAA CO-OPS + FAA NOTAM).
+ *  All fetched from this app's own /api routes — zero external dependency
+ *  at runtime.
  */
 
 import { useEffect, useState } from "react";
@@ -11,13 +12,47 @@ import { X, ExternalLink, Copy, Check } from "lucide-react";
 import { getCamerasNear, getStationHazards, type WeatherCam } from "@/lib/api";
 
 interface Props {
-  station: { id: string; lat: number; lng: number; name?: string } | null;
+  station: {
+    id: string;
+    lat: number;
+    lng: number;
+    name?: string;
+    state?: string;
+    status?: string;
+    minutesSinceLast?: number | null;
+    lastMetar?: string | null;
+    lastValid?: string | null;
+    probableReason?: string | null;
+  } | null;
   onClose: () => void;
 }
 
 interface QuakeRec { mag: number | null; place: string; time_ms: number | null; distance_km?: number; url: string }
 interface StormRec { id: string; name: string; class_label: string; intensity_kt: string; pressure_mb: string; distance_km?: number; public_advisory: string }
 interface BuoyPack { buoy: { id: string; name: string; distance_km: number }; obs: Record<string, number | null> | null }
+interface CoopsPack {
+  station: {
+    id: string;
+    name: string;
+    state: string;
+    lat: number;
+    lon: number;
+    affiliations: string;
+    distance_km: number;
+  };
+  obs: {
+    observed_at: string | null;
+    water_level_ft: number | null;
+    water_level_quality: string | null;
+    wind_kt: number | null;
+    wind_dir_deg: number | null;
+    wind_cardinal: string | null;
+    gust_kt: number | null;
+    air_temp_f: number | null;
+    air_pressure_hpa: number | null;
+  } | null;
+  links: { station: string; data_api: string };
+}
 interface NotamSum { configured: boolean; count: number; equipment_out: number; asos_related: number; items: Array<Record<string, string>> }
 
 interface DecodedMetarClient {
@@ -89,7 +124,7 @@ export function DrillPanel({ station, onClose }: Props) {
   const [cams, setCams] = useState<WeatherCam[]>([]);
   const [camsLoading, setCamsLoading] = useState(false);
   const [hazards, setHazards] = useState<{
-    quakes: QuakeRec[]; storms: StormRec[]; buoy: BuoyPack | null; notams: NotamSum;
+    quakes: QuakeRec[]; storms: StormRec[]; buoy: BuoyPack | null; coops: CoopsPack | null; notams: NotamSum;
   } | null>(null);
   const [metar, setMetar] = useState<StationMetarResponse | null>(null);
   const [metarLoading, setMetarLoading] = useState(false);
@@ -116,6 +151,7 @@ export function DrillPanel({ station, onClose }: Props) {
           quakes: (h.quakes as unknown as QuakeRec[]) ?? [],
           storms: (h.storms as unknown as StormRec[]) ?? [],
           buoy: (h.buoy as BuoyPack | null) ?? null,
+          coops: (h.coops as CoopsPack | null) ?? null,
           notams: (h.notams as unknown as NotamSum) ?? { configured: false, count: 0, equipment_out: 0, asos_related: 0, items: [] },
         }),
       )
@@ -150,13 +186,15 @@ export function DrillPanel({ station, onClose }: Props) {
   };
 
   return (
-    <div className="noc-panel mt-4">
+    <aside className="fixed inset-y-0 right-0 z-50 w-full max-w-[780px] overflow-y-auto border-l border-[color:var(--color-border)] bg-[color:var(--color-surface)] p-4 shadow-2xl md:p-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="sticky top-0 z-10 -mx-4 -mt-4 mb-4 border-b border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-4 py-4 md:-mx-5 md:-mt-5 md:px-5">
+      <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3 flex-wrap">
           <div className="font-mono text-[1.6rem] leading-none font-semibold text-[color:var(--color-fg)]">
             {station.id}
           </div>
+          {station.status && <StationStatusPill status={station.status} />}
           <button
             onClick={copyId}
             title="Copy station ID"
@@ -184,6 +222,31 @@ export function DrillPanel({ station, onClose }: Props) {
           <X size={18} />
         </button>
       </div>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <StationMetric label="State" value={station.state ?? "--"} />
+        <StationMetric label="Last valid" value={station.lastValid ?? "--"} />
+        <StationMetric
+          label="Age"
+          value={station.minutesSinceLast != null ? `${station.minutesSinceLast} min` : "--"}
+        />
+        <StationMetric label="Position" value={`${station.lat.toFixed(3)}, ${station.lng.toFixed(3)}`} />
+      </div>
+
+      {station.probableReason && (
+        <div className="mb-4 rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)] p-3">
+          <div className="noc-label mb-1 text-[0.58rem]">Probable reason</div>
+          <div className="text-sm text-[color:var(--color-fg)]">{station.probableReason}</div>
+        </div>
+      )}
+
+      {station.lastMetar && (
+        <div className="mb-4 rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)] p-3">
+          <div className="noc-label mb-1 text-[0.58rem]">Latest raw METAR</div>
+          <div className="font-mono text-[0.78rem] leading-relaxed text-[color:var(--color-fg)]">{station.lastMetar}</div>
+        </div>
+      )}
 
       {/* Decoded METAR */}
       <DecodedMetarBlock metar={metar} loading={metarLoading} />
@@ -210,8 +273,29 @@ export function DrillPanel({ station, onClose }: Props) {
 
       {/* Site hazards */}
       <SiteHazards hazards={hazards} />
+    </aside>
+  );
+}
+
+function StationMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)] px-3 py-2">
+      <div className="noc-label mb-1 text-[0.54rem]">{label}</div>
+      <div className="truncate font-mono text-[0.78rem] text-[color:var(--color-fg)]">{value}</div>
     </div>
   );
+}
+
+function StationStatusPill({ status }: { status: string }) {
+  const cls =
+    status === "CLEAN" || status === "RECOVERED"
+      ? "owl-pill owl-pill-ok"
+      : status === "FLAGGED" || status === "INTERMITTENT"
+        ? "owl-pill owl-pill-warn"
+        : status === "MISSING" || status === "OFFLINE"
+          ? "owl-pill owl-pill-crit"
+          : "owl-pill owl-pill-dim";
+  return <span className={cls}>{status}</span>;
 }
 
 // -- Live coverage tiles -----------------------------------------------------
@@ -272,17 +356,17 @@ function TileImage({ title, subtitle, src, alt }: { title: string; subtitle: str
 
 // -- Site hazards ------------------------------------------------------------
 
-function SiteHazards({ hazards }: { hazards: { quakes: QuakeRec[]; storms: StormRec[]; buoy: BuoyPack | null; notams: NotamSum } | null }) {
+function SiteHazards({ hazards }: { hazards: { quakes: QuakeRec[]; storms: StormRec[]; buoy: BuoyPack | null; coops: CoopsPack | null; notams: NotamSum } | null }) {
   if (!hazards) {
     return <div className="noc-h3 mb-2">Site Hazards <span className="ml-2 text-[color:var(--color-fg-dim)] normal-case">loading…</span></div>;
   }
-  const anything = hazards.quakes.length || hazards.storms.length || hazards.buoy?.obs || (hazards.notams.configured && hazards.notams.count);
+  const anything = hazards.quakes.length || hazards.storms.length || hazards.buoy?.obs || hazards.coops?.obs || (hazards.notams.configured && hazards.notams.count);
   return (
     <div>
       <div className="noc-h3 mb-2">Site Hazards</div>
       {!anything && (
         <div className="text-[0.78rem] text-[color:var(--color-fg-dim)]">
-          No earthquakes within 300 km · no tropical systems within 500 km · no buoy within 200 km.
+          No earthquakes within 300 km · no tropical systems within 500 km · no buoy within 200 km · no CO-OPS station within 175 km.
           {!hazards.notams.configured && (
             <>
               {" · "}FAA NOTAM feed not configured — set{" "}
@@ -330,6 +414,44 @@ function SiteHazards({ hazards }: { hazards: { quakes: QuakeRec[]; storms: Storm
           ))}
           cols={["ID", "Name", "Class", "Dist", ""]}
         />
+      )}
+      {hazards.coops?.station && (
+        <div className="mt-3 border border-[color:var(--color-border)] rounded bg-[color:var(--color-surface-2)] p-3">
+          <div className="flex items-start justify-between gap-3 mb-1.5">
+            <div className="text-[0.72rem] text-[color:var(--color-fg-muted)]">
+              Nearest NOAA CO-OPS ·{" "}
+              <span className="font-mono text-[color:var(--color-fg)]">{hazards.coops.station.id}</span>
+              {" · "}{hazards.coops.station.name}
+              {hazards.coops.station.state ? `, ${hazards.coops.station.state}` : ""}
+              {" · "}{hazards.coops.station.distance_km} km
+            </div>
+            <a
+              href={hazards.coops.links.station}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[color:var(--color-accent)] shrink-0"
+              aria-label="Open NOAA CO-OPS station"
+            >
+              <ExternalLink size={12} />
+            </a>
+          </div>
+          {hazards.coops.obs ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-[0.8rem]">
+                <BuoyMetric label="Water level" value={hazards.coops.obs.water_level_ft != null ? `${hazards.coops.obs.water_level_ft.toFixed(2)} ft MLLW` : "—"} />
+                <BuoyMetric label="Wind" value={hazards.coops.obs.wind_kt != null ? `${hazards.coops.obs.wind_kt.toFixed(1)} kt ${hazards.coops.obs.wind_cardinal ?? ""}` : "—"} />
+                <BuoyMetric label="Gust" value={hazards.coops.obs.gust_kt != null ? `${hazards.coops.obs.gust_kt.toFixed(1)} kt` : "—"} />
+                <BuoyMetric label="Pressure" value={hazards.coops.obs.air_pressure_hpa != null ? `${hazards.coops.obs.air_pressure_hpa.toFixed(1)} hPa` : "—"} />
+                <BuoyMetric label="Air temp" value={hazards.coops.obs.air_temp_f != null ? `${hazards.coops.obs.air_temp_f.toFixed(1)}°F` : "—"} />
+              </div>
+              <div className="mt-2 text-[0.66rem] text-[color:var(--color-fg-dim)]">
+                Observed {hazards.coops.obs.observed_at ?? "latest"} · NWLON / PORTS independent coastal context
+              </div>
+            </>
+          ) : (
+            <div className="text-[0.75rem] text-[color:var(--color-fg-dim)]">CO-OPS latest products unavailable.</div>
+          )}
+        </div>
       )}
       {hazards.buoy?.buoy && (
         <div className="mt-3 border border-[color:var(--color-border)] rounded bg-[color:var(--color-surface-2)] p-3">

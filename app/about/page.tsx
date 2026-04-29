@@ -71,9 +71,11 @@ export default function AboutPage() {
             <Li label="USGS">Earthquake Hazards — real-time GeoJSON, per-station correlation</Li>
             <Li label="NHC">National Hurricane Center — active tropical cyclones</Li>
             <Li label="NDBC">National Data Buoy Center — 402 met-enabled buoys</Li>
+            <Li label="CO-OPS">NOS Tides &amp; Currents — coastal water level, wind, pressure, temperature</Li>
             <Li label="FAA">WeatherCams — 260+ FAA + hosted airport cams</Li>
             <Li label="SWPC">NOAA Space Weather Prediction Center — Kp, X-ray, alerts</Li>
             <Li label="FAA NOTAM">Planned-outage correlation (key-gated)</Li>
+            <Li label="NOAA Atlas">NWPS, NOMADS, MRMS, NEXRAD/GOES NODD, MADIS, and map-service expansion queue</Li>
           </ul>
         </section>
 

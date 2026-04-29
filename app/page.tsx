@@ -70,7 +70,7 @@ export default async function SummaryPage() {
         nodesTotal={total || 920}
       />
 
-      <header className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+      <header className="mb-6 hidden items-start justify-between gap-4 flex-wrap sm:flex">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-[color:var(--color-fg)]">
             Network Summary
@@ -99,6 +99,8 @@ export default async function SummaryPage() {
         <AiBrief />
       </header>
 
+      <SummaryClient />
+
       <KpiStrip
         total={total || 918}
         clean={counts.CLEAN}
@@ -109,8 +111,6 @@ export default async function SummaryPage() {
         noData={counts["NO DATA"]}
         scanAgeSec={null}
       />
-
-      <SummaryClient />
     </>
   );
 }

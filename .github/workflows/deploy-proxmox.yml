@@ -1,0 +1,61 @@
+name: Deploy to Proxmox
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: proxmox-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}:latest
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+      - name: Deploy over SSH
+        if: ${{ secrets.PROXMOX_DEPLOY_HOST != '' && secrets.PROXMOX_DEPLOY_KEY != '' }}
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROXMOX_DEPLOY_HOST }}
+          username: ${{ secrets.PROXMOX_DEPLOY_USER || 'root' }}
+          key: ${{ secrets.PROXMOX_DEPLOY_KEY }}
+          script: |
+            set -euo pipefail
+            pct exec 102 -- bash -lc '
+              set -euo pipefail
+              cd /opt/owl
+              git pull --ff-only || true
+              npm ci --no-audit --no-fund
+              npm run build
+              rm -rf .next/standalone/.next/static .next/standalone/public
+              mkdir -p .next/standalone/.next
+              cp -a .next/static .next/standalone/.next/static
+              cp -a public .next/standalone/public
+              chown -R owl:owl .next/standalone
+              systemctl restart owl
+            '

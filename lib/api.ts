@@ -120,6 +120,7 @@ export const getStationHazards = (id: string) =>
     quakes: Array<Record<string, unknown>>;
     storms: Array<Record<string, unknown>>;
     buoy: unknown;
+    coops: unknown;
     notams: Record<string, unknown>;
   }>(`/api/station/${encodeURIComponent(id)}/hazards`, { revalidate: 120 });
 

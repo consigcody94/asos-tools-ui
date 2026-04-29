@@ -5,7 +5,7 @@
  *    1. Scheduler health snapshot from /api/health
  *    2. Status-counts histogram (live)
  *    3. Source registry from /api/sources
- *    4. Future-roadmap: anomaly review, audit log, manual cache flush
+ *    4. Operator controls: metrics endpoint + manual cache flush
  */
 
 import { useMemo, useState } from "react";
@@ -18,6 +18,8 @@ interface SourceRecord {
   trust?: string;
   notes?: string;
   refresh?: string;
+  cadence?: string;
+  used_for?: string;
   [k: string]: unknown;
 }
 
@@ -27,19 +29,19 @@ interface Props {
 }
 
 export function AdminDashboard({ health, sources }: Props) {
-  const [tab, setTab] = useState<"health" | "sources" | "roadmap">("health");
+  const [tab, setTab] = useState<"health" | "sources" | "ops">("health");
 
   return (
     <>
       <div className="flex gap-2 mb-4 border-b border-noc-border pb-2">
         <SubTab cur={tab} k="health"  set={setTab}>Scheduler &amp; Health</SubTab>
         <SubTab cur={tab} k="sources" set={setTab}>Source Registry <span className="ml-1 text-noc-cyan">{sources.length}</span></SubTab>
-        <SubTab cur={tab} k="roadmap" set={setTab}>Roadmap</SubTab>
+        <SubTab cur={tab} k="ops" set={setTab}>Operations</SubTab>
       </div>
 
       {tab === "health"  && <HealthView  health={health} />}
       {tab === "sources" && <SourcesView sources={sources} />}
-      {tab === "roadmap" && <RoadmapView />}
+      {tab === "ops" && <OperationsView />}
     </>
   );
 }
@@ -47,8 +49,8 @@ export function AdminDashboard({ health, sources }: Props) {
 function SubTab({
   cur, k, set, children,
 }: {
-  cur: string; k: "health" | "sources" | "roadmap";
-  set: (k: "health" | "sources" | "roadmap") => void;
+  cur: string; k: "health" | "sources" | "ops";
+  set: (k: "health" | "sources" | "ops") => void;
   children: React.ReactNode;
 }) {
   const active = cur === k;
@@ -163,6 +165,7 @@ function SourcesView({ sources }: { sources: SourceRecord[] }) {
               <Th>Name</Th>
               <Th>Trust</Th>
               <Th>Refresh</Th>
+              <Th>Used for</Th>
               <Th>URL</Th>
               <Th>Notes</Th>
             </tr>
@@ -186,7 +189,8 @@ function SourcesView({ sources }: { sources: SourceRecord[] }) {
                     {s.trust || "—"}
                   </span>
                 </td>
-                <td className="px-3 py-1.5 text-noc-muted text-xs">{s.refresh || "—"}</td>
+                <td className="px-3 py-1.5 text-noc-muted text-xs">{s.refresh || s.cadence || "—"}</td>
+                <td className="px-3 py-1.5 text-noc-text text-xs min-w-[240px]">{s.used_for || "—"}</td>
                 <td className="px-3 py-1.5">
                   {s.url ? (
                     <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-noc-cyan hover:text-noc-text break-all text-xs">
@@ -212,36 +216,38 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ───────────────────── Roadmap ─────────────────────
-function RoadmapView() {
+// ───────────────────── Operations ─────────────────────
+function OperationsView() {
+  const [flushState, setFlushState] = useState<string>("idle");
+
+  async function flushCache() {
+    setFlushState("flushing");
+    try {
+      const res = await fetch("/api/admin/cache/flush", { method: "POST" });
+      setFlushState(res.ok ? "refresh started" : `failed ${res.status}`);
+    } catch {
+      setFlushState("failed");
+    }
+  }
+
   return (
-    <div className="noc-panel">
-      <div className="noc-h3 mb-3">Roadmap (Azure phase plan)</div>
-      <ul className="space-y-2 text-sm text-noc-text">
-        {[
-          ["Application Insights", "frontend + backend telemetry, custom metrics for owl.scan.duration / api.latency / cam.fetch_errors", "PHASE 1"],
-          ["Azure Cache for Redis", "hot METAR + scan cache, ~30s TTL", "PHASE 1"],
-          ["PostgreSQL Flexible Server", "stations + scans + audit_events + roles + users", "PHASE 2"],
-          ["Key Vault + Managed Identity", "no plaintext secrets in container env", "PHASE 2"],
-          ["Azure SignalR Service", "real-time globe push instead of 60s polling", "PHASE 3"],
-          ["Azure OpenAI GPT-4o", "AI BRIEF — generate shift-change handoff from scan + alerts", "PHASE 4"],
-          ["Microsoft Entra ID SSO", "RBAC: noc_duty / aomc / forecaster / viewer", "PHASE 5"],
-          ["Azure Front Door + WAF", "DDoS, OWASP top 10, custom domain", "PHASE 5"],
-          ["GitHub Actions OIDC", "no stored secrets; preview env per PR", "PHASE 6"],
-          ["Anomaly review queue", "stumpy Matrix Profile flagged windows for human review", "FOLLOW-ON"],
-          ["Manual cache flush + audit", "operator-driven cache invalidation, all logged", "FOLLOW-ON"],
-        ].map(([title, desc, phase]) => (
-          <li key={title} className="flex gap-3 items-start py-1">
-            <span className="font-mono text-[0.65rem] text-noc-cyan shrink-0 w-20 mt-1 uppercase tracking-wider">
-              {phase}
-            </span>
-            <div>
-              <div className="font-display text-noc-text">{title}</div>
-              <div className="text-xs text-noc-muted">{desc}</div>
-            </div>
-          </li>
-        ))}
-      </ul>
+    <div className="grid gap-3 md:grid-cols-2">
+      <div className="noc-panel">
+        <div className="noc-h3 mb-2">Manual Cache Flush</div>
+        <p className="mb-3 text-sm text-noc-muted">
+          Clears the in-process scan cache and starts one background refresh. This is paced by the upstream IEM rate limiter.
+        </p>
+        <button className="noc-btn noc-btn-primary" onClick={flushCache}>Flush scan cache</button>
+        <span className="ml-3 font-mono text-xs text-noc-muted">{flushState}</span>
+      </div>
+
+      <div className="noc-panel">
+        <div className="noc-h3 mb-2">Prometheus Metrics</div>
+        <p className="mb-3 text-sm text-noc-muted">
+          Scrape backend metrics for scan duration, upstream API latency, and upstream errors.
+        </p>
+        <a href="/api/metrics" target="_blank" rel="noopener noreferrer" className="noc-btn">Open /api/metrics</a>
+      </div>
     </div>
   );
 }

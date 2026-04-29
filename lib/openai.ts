@@ -1,8 +1,8 @@
-/** Azure OpenAI client (server-only, REST-based — no SDK dep).
+/** OpenAI-compatible chat client (server-only, REST-based — no SDK dep).
  *
- *  Uses the GA chat-completions API on a deployment named via
- *  AZURE_OPENAI_DEPLOYMENT (default "gpt-5-mini").  Endpoint comes
- *  from AZURE_OPENAI_ENDPOINT.  Key from AZURE_OPENAI_KEY.
+ *  Supports:
+ *    - OPENAI_BASE_URL + OPENAI_API_KEY + AI_BRIEF_MODEL
+ *    - Azure OpenAI via AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_KEY
  *
  *  When env is unset (local dev), the helper returns a graceful
  *  "AI Brief is not configured" string instead of throwing.
@@ -10,9 +10,11 @@
 
 import { trackException, trackMetric } from "./telemetry";
 
-const ENDPOINT = (process.env.AZURE_OPENAI_ENDPOINT || "").replace(/\/+$/, "");
-const KEY = process.env.AZURE_OPENAI_KEY || "";
-const DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-5-mini";
+const OPENAI_BASE = (process.env.OPENAI_BASE_URL || "").replace(/\/+$/, "");
+const OPENAI_KEY = process.env.OPENAI_API_KEY || "";
+const AZURE_ENDPOINT = (process.env.AZURE_OPENAI_ENDPOINT || "").replace(/\/+$/, "");
+const AZURE_KEY = process.env.AZURE_OPENAI_KEY || "";
+const DEPLOYMENT = process.env.AI_BRIEF_MODEL || process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o";
 const API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-10-21";
 
 export interface ChatMsg {
@@ -30,16 +32,17 @@ export interface ChatOpts {
 }
 
 export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<string> {
-  if (!ENDPOINT || !KEY) {
+  if ((!OPENAI_BASE || !OPENAI_KEY) && (!AZURE_ENDPOINT || !AZURE_KEY)) {
     return (
       "AI Brief is not configured on this deployment. " +
-      "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY env vars to enable."
+      "Set OPENAI_BASE_URL + OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_KEY."
     );
   }
 
-  const url =
-    `${ENDPOINT}/openai/deployments/${encodeURIComponent(DEPLOYMENT)}/chat/completions` +
-    `?api-version=${API_VERSION}`;
+  const azure = Boolean(AZURE_ENDPOINT && AZURE_KEY && !OPENAI_BASE);
+  const url = azure
+    ? `${AZURE_ENDPOINT}/openai/deployments/${encodeURIComponent(DEPLOYMENT)}/chat/completions?api-version=${API_VERSION}`
+    : `${OPENAI_BASE}/chat/completions`;
 
   // gpt-5 family models are reasoning models — they spend tokens on
   // internal thinking BEFORE emitting visible content.  We need a
@@ -49,9 +52,11 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
   // extra fields.
   const body: Record<string, unknown> = {
     messages,
+    model: DEPLOYMENT,
     max_completion_tokens: opts.maxTokens ?? 4000,
     reasoning_effort: opts.reasoningEffort ?? "low",
   };
+  if (azure) delete body.model;
   // gpt-5 series doesn't accept temperature param; only set when
   // we're talking to a non-reasoning model.
   if (!DEPLOYMENT.startsWith("gpt-5") && opts.temperature !== undefined) {
@@ -64,7 +69,7 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "api-key": KEY,
+        ...(azure ? { "api-key": AZURE_KEY } : { Authorization: `Bearer ${OPENAI_KEY}` }),
       },
       body: JSON.stringify(body),
       signal: opts.signal,

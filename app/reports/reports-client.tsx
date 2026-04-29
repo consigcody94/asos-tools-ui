@@ -1,19 +1,14 @@
 "use client";
 
-/** Reports — minimal browser-side client.
+/** Reports client.
  *
- *  The full PNG/PDF report builders live in the Streamlit edition
- *  (matplotlib renders + a ZIP exporter).  Until the @react-pdf/renderer
- *  port lands, this client offers two paths:
- *
- *    1. CSV download for a station's last 1/7/14/30-day 1-min data,
- *       streamed directly from IEM (no backend hop).
- *    2. A "Preview in Streamlit" deep-link into the HF Space's Reports
- *       tab with the chosen ICAO + window pre-selected.
+ *  Native CSV export plus an evidence-package manifest operators can attach
+ *  to station investigations. PDF/DOCX builders remain on the roadmap once
+ *  persistent report storage is wired.
  */
 
 import { useState } from "react";
-import { Download, ExternalLink, FileDown } from "lucide-react";
+import { Clipboard, Download, ExternalLink, FileDown, FileJson, ShieldCheck } from "lucide-react";
 
 const WINDOWS = [
   { days: 1,  label: "1 day"  },
@@ -26,30 +21,14 @@ export function ReportsClient() {
   const [icao, setIcao] = useState("KJFK");
   const [days, setDays] = useState(7);
   const [downloading, setDownloading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   function stationDeepLink(): string {
     return `/stations?focus=${encodeURIComponent(icao)}`;
   }
 
   function iemCsvUrl(): string {
-    // IEM 1-minute ASOS download.  Window is server-relative so we
-    // compute end-of-day UTC, walk back N days.
-    const end = new Date();
-    end.setUTCHours(23, 59, 0, 0);
-    const start = new Date(end.getTime() - days * 86400_000);
-    const fmt = (d: Date) =>
-      `year1=${d.getUTCFullYear()}&month1=${d.getUTCMonth() + 1}` +
-      `&day1=${d.getUTCDate()}&hour1=${d.getUTCHours()}&minute1=${d.getUTCMinutes()}`;
-    const fmt2 = (d: Date) =>
-      `year2=${d.getUTCFullYear()}&month2=${d.getUTCMonth() + 1}` +
-      `&day2=${d.getUTCDate()}&hour2=${d.getUTCHours()}&minute2=${d.getUTCMinutes()}`;
-    return (
-      "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py?" +
-      `station=${encodeURIComponent(icao)}` +
-      "&vars=tmpf&vars=dwpf&vars=sknt&vars=drct&vars=gust&vars=alti&vars=mslp&vars=p01i&vars=vsby" +
-      "&sample=1min&what=download&delim=comma&" +
-      fmt(start) + "&" + fmt2(end)
-    );
+    return `/api/reports/iem-1min?station=${encodeURIComponent(icao)}&days=${days}`;
   }
 
   async function downloadCsv() {
@@ -67,6 +46,88 @@ export function ReportsClient() {
     } finally {
       setDownloading(false);
     }
+  }
+
+  function stationEvidenceLinks() {
+    const id = icao.toUpperCase();
+    return {
+      iem_1min_csv: iemCsvUrl(),
+      station_drill: stationDeepLink(),
+      awc_metar: `https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(id)}&format=raw&hours=4`,
+      awc_taf: `https://aviationweather.gov/api/data/taf?ids=${encodeURIComponent(id)}&format=raw`,
+      nws_latest_observation: `https://api.weather.gov/stations/${encodeURIComponent(id)}/observations/latest`,
+      owl_hazards: `/api/station/${encodeURIComponent(id)}/hazards`,
+      owl_imagery: `/api/station/${encodeURIComponent(id)}/imagery`,
+      noaa_atlas: "/noaa",
+      source_registry: "/api/sources",
+    };
+  }
+
+  function reportMarkdown(): string {
+    const id = icao.toUpperCase();
+    const links = stationEvidenceLinks();
+    return [
+      `# OWL Station Evidence Package - ${id}`,
+      "",
+      `Generated: ${new Date().toISOString()}`,
+      `Window: ${days} day${days === 1 ? "" : "s"}`,
+      "",
+      "## Primary evidence",
+      `- IEM/NCEI 1-minute ASOS CSV: ${links.iem_1min_csv}`,
+      `- OWL station drill: ${location.origin}${links.station_drill}`,
+      `- AWC METAR raw feed: ${links.awc_metar}`,
+      `- AWC TAF raw feed: ${links.awc_taf}`,
+      `- NWS latest observation endpoint: ${links.nws_latest_observation}`,
+      `- OWL hazards API: ${location.origin}${links.owl_hazards}`,
+      `- OWL imagery API: ${location.origin}${links.owl_imagery}`,
+      "",
+      "## Correlation lanes",
+      "- FAA WeatherCams, NEXRAD RIDGE, GOES, NASA GIBS, Sentinel/Landsat STAC, USGS earthquakes, NHC storms, NDBC buoys, NOAA CO-OPS, SWPC, and FAA NOTAMs are rendered in the OWL station drill where available.",
+      "- Use the NOAA Source Atlas for NWPS, NOMADS, MRMS, NEXRAD NODD, GOES NODD, MADIS, and map-service expansion lanes.",
+      "",
+      "## Operator notes",
+      "- Confirm the raw METAR timestamp and maintenance remark before opening an outage ticket.",
+      "- Attach CSV plus any camera/radar/satellite screenshots needed by the receiving operations team.",
+    ].join("\n");
+  }
+
+  async function copyReport() {
+    try {
+      await navigator.clipboard.writeText(reportMarkdown());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  function downloadManifest() {
+    const id = icao.toUpperCase();
+    const manifest = {
+      product: "OWL Station Evidence Package",
+      station: id,
+      generated_at: new Date().toISOString(),
+      window_days: days,
+      sources: stationEvidenceLinks(),
+      next_level_sources: [
+        "NOAA CO-OPS",
+        "NOAA NWPS",
+        "NOAA NOMADS",
+        "NOAA MRMS",
+        "NEXRAD on NODD",
+        "GOES-R on NODD",
+        "NOAA MADIS",
+      ],
+    };
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${id}-${days}day-evidence-manifest.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -139,6 +200,51 @@ export function ReportsClient() {
           <ExternalLink size={14} />
           Open {icao} · {days}-day station view
         </a>
+      </div>
+
+      <div className="noc-panel mb-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+          <div>
+            <div className="noc-h3 mb-1">Evidence Package</div>
+            <p className="text-[color:var(--color-fg-muted)] text-sm leading-relaxed max-w-3xl">
+              Native report manifest for station investigations. It keeps links to
+              authoritative feeds and the OWL drill panel together, so CSV, camera,
+              radar, satellite, NOTAM, buoy, and CO-OPS context travel as one packet.
+            </p>
+          </div>
+          <a href="/noaa" className="noc-btn inline-flex items-center gap-2">
+            <ShieldCheck size={14} />
+            NOAA Atlas
+          </a>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3 mb-4">
+          {[
+            ["Primary", "IEM/NCEI CSV, latest METAR, NWS observation endpoint"],
+            ["Visual", "FAA WeatherCam, NEXRAD RIDGE, GOES, NASA GIBS, STAC imagery"],
+            ["Hazards", "USGS quakes, NHC storms, NDBC buoys, NOAA CO-OPS, FAA NOTAMs"],
+          ].map(([label, desc]) => (
+            <div key={label} className="border border-[color:var(--color-border)] rounded bg-[color:var(--color-bg)] px-3 py-2">
+              <div className="noc-label text-[0.6rem] mb-1">{label}</div>
+              <div className="text-sm text-[color:var(--color-fg)]">{desc}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button onClick={copyReport} className="noc-btn noc-btn-primary inline-flex items-center gap-2">
+            <Clipboard size={14} />
+            {copied ? "Copied report" : "Copy Markdown"}
+          </button>
+          <button onClick={downloadManifest} className="noc-btn inline-flex items-center gap-2">
+            <FileJson size={14} />
+            Download JSON Manifest
+          </button>
+          <a href={stationDeepLink()} className="noc-btn inline-flex items-center gap-2">
+            <ExternalLink size={14} />
+            Open Station Drill
+          </a>
+        </div>
       </div>
 
       <div className="noc-panel">

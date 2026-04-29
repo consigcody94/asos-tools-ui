@@ -13,7 +13,7 @@ export default function ReportsPage() {
           REPORTS
         </h1>
         <p className="noc-label mt-1">
-          On-Demand Station Dashboards &middot; PDF / PNG / CSV
+          On-Demand Station Dashboards &middot; CSV / Markdown / JSON
         </p>
       </header>
 

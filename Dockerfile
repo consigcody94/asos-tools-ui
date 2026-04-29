@@ -1,6 +1,6 @@
 # =============================================================================
 # O.W.L. — Observation Watch Log (Next.js UI)
-# Multi-stage Docker build for Azure Container Apps.
+# Multi-stage Docker build for Proxmox / Docker / managed containers.
 #
 # Stage 1 (deps):    install package.json deps in a clean Node Alpine image.
 # Stage 2 (builder): copy source + run `next build` with output:standalone.
@@ -16,9 +16,8 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json ./
-# Use `npm install` (no lockfile yet — first deploy).  Subsequent deploys
-# can switch to `npm ci` once package-lock.json is committed.
-RUN npm install --no-audit --no-fund
+COPY package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # ----- Stage 2: builder -----
 FROM node:22-alpine AS builder

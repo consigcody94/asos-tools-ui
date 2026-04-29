@@ -41,18 +41,18 @@ export function OpsBanner({
   const s = STATUS_STYLE[status];
 
   return (
-    <div className="flex items-center justify-between gap-6 px-4 py-2.5 mb-5 bg-[color:var(--color-surface)] border border-[color:var(--color-border)] rounded-md">
-      <div className="flex items-center gap-4 flex-wrap text-[0.8rem]">
+    <div className="-mx-4 mb-2 flex items-center justify-between gap-3 border-y border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-3 py-2 sm:mx-0 sm:mb-5 sm:gap-6 sm:rounded-md sm:border sm:px-4 sm:py-2.5">
+      <div className="flex items-center gap-2 text-[0.72rem] sm:flex-wrap sm:gap-4 sm:text-[0.8rem]">
         <span className={s.pill}>{s.label}</span>
-        <span className="text-[color:var(--color-fg-dim)]">·</span>
-        <span className="text-[color:var(--color-fg-muted)]">
+        <span className="hidden text-[color:var(--color-fg-dim)] sm:inline">·</span>
+        <span className="whitespace-nowrap text-[color:var(--color-fg-muted)]">
           Nodes{" "}
           <span className="noc-readout text-[color:var(--color-fg)]">
             {pad(nodesActive, 3)} / {pad(nodesTotal, 3)}
           </span>
         </span>
-        <span className="text-[color:var(--color-fg-dim)]">·</span>
-        <span className="text-[color:var(--color-fg-muted)]">
+        <span className="hidden text-[color:var(--color-fg-dim)] sm:inline">·</span>
+        <span className="hidden text-[color:var(--color-fg-muted)] sm:inline">
           Mission{" "}
           <span className="noc-readout text-[color:var(--color-fg)]">
             {mission}
@@ -60,8 +60,8 @@ export function OpsBanner({
         </span>
       </div>
 
-      <div className="flex items-center gap-3 text-[0.8rem]">
-        <span className="text-[color:var(--color-fg-muted)]">UTC</span>
+      <div className="flex items-center gap-2 text-[0.72rem] sm:gap-3 sm:text-[0.8rem]">
+        <span className="hidden text-[color:var(--color-fg-muted)] sm:inline">UTC</span>
         <span className="noc-readout text-[color:var(--color-fg)]">{clock}</span>
       </div>
     </div>

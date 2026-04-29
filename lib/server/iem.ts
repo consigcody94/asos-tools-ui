@@ -1,21 +1,26 @@
 /** Iowa Environmental Mesonet (IEM) METAR fetcher + network scan.
  *
- *  IEM's CGI endpoint accepts any number of stations in one GET and
- *  returns CSV. We batch 20 per request; the shared rate-limited
- *  fetcher enforces the per-host budget (3 req/s) and handles
- *  Retry-After / 429 backoff automatically.
+ *  IEM's CGI endpoint accepts multi-station CSV requests and returns
+ *  CSV. Its docs state the service has an IP-based abuse limit, but do
+ *  not publish the exact quota. OWL therefore uses fewer larger batches,
+ *  serial execution, and long host cooldown when IEM asks us to slow down.
  */
 
 import { hasMaintenanceFlag, parseMetarTime } from "./metar";
 import type { ScanRow, StationStatus } from "./types";
 import { aomcStations } from "./stations";
-import { fetchText } from "./fetcher";
+import { applyHostCooldown, fetchJson, fetchText } from "./fetcher";
 
 const IEM_BASE =
   process.env.IEM_API_BASE || "https://mesonet.agron.iastate.edu";
 
-// 20-station batches serially; fetcher's token bucket keeps things polite.
-const BATCH = 20;
+const IEM_HOST = new URL(IEM_BASE).host;
+
+// Larger batches produce far fewer HTTP requests. IEM works reliably with
+// repeated station parameters; 80 keeps URL length reasonable while cutting
+// a 918-station scan from ~46 requests to ~12.
+const BATCH = 80;
+const RATE_LIMIT_COOLDOWN_MS = 10 * 60_000;
 
 interface RawMetarRow {
   station: string;
@@ -38,28 +43,20 @@ async function fetchBatch(stations: string[], hoursBack = 4): Promise<RawMetarRo
     report_type: ["3", "4"],
   };
 
-  // IEM returns rate-limit messages as 200 OK text bodies, bypassing the
-  // fetcher's HTTP-status retry logic. Detect that pattern and retry
-  // with additional backoff up to ``IEM_TEXT_RETRIES`` times.
-  const IEM_TEXT_RETRIES = 4;
-  for (let attempt = 0; attempt < IEM_TEXT_RETRIES; attempt++) {
-    const text = await fetchText(`${IEM_BASE}/cgi-bin/request/asos.py`, {
-      query, timeoutMs: 60_000, retries: 3,
-    });
-    if (!text) {
-      console.warn(`[iem] batch of ${stations.length} got null text (attempt ${attempt + 1}/${IEM_TEXT_RETRIES})`);
-      continue;
-    }
-    if (isIemErrorBody(text)) {
-      const waitMs = 1500 * (attempt + 1);
-      console.warn(`[iem] batch got rate-limit error body (attempt ${attempt + 1}/${IEM_TEXT_RETRIES}); waiting ${waitMs}ms`);
-      await new Promise((r) => setTimeout(r, waitMs));
-      continue;
-    }
-    return parseCsv(text);
+  const text = await fetchText(`${IEM_BASE}/cgi-bin/request/asos.py`, {
+    query,
+    timeoutMs: 60_000,
+    retries: 1,
+  });
+  if (!text) {
+    applyHostCooldown(IEM_HOST, RATE_LIMIT_COOLDOWN_MS, "empty IEM batch response");
+    throw new Error(`IEM batch of ${stations.length} returned no text`);
   }
-  console.warn(`[iem] batch of ${stations.length} exhausted all retries — empty result`);
-  return [];
+  if (isIemErrorBody(text)) {
+    applyHostCooldown(IEM_HOST, RATE_LIMIT_COOLDOWN_MS, "IEM slow-down body");
+    throw new Error(`IEM asked OWL to slow down for batch of ${stations.length}`);
+  }
+  return parseCsv(text);
 }
 
 /** IEM responds to rate limiting with HTTP 200 + a text body like
@@ -109,9 +106,9 @@ function parseCsv(text: string): RawMetarRow[] {
 
 /** Fetch the last-N-hours of METARs for a set of stations.
  *
- *  Batches run serially — the shared fetcher's token bucket (3 req/s)
- *  and per-host serial queue paces them without us needing a manual
- *  inter-batch delay. 920 stations ≈ 46 batches → ~20-30s typical. */
+ *  Batches run serially through the shared per-host token bucket. 918
+ *  stations ≈ 12 requests at 1 request per 5 seconds, and a rate-limit
+ *  body aborts the scan instead of retry-looping into more upstream load. */
 export async function fetchRecentMetars(
   stations: string[],
   hoursBack = 4,
@@ -124,6 +121,34 @@ export async function fetchRecentMetars(
   for (const batch of batches) {
     const rows = await fetchBatch(batch, hoursBack);
     for (const r of rows) out.push(r);
+  }
+  return out;
+}
+
+interface AwcMetarRow {
+  icaoId?: string;
+  reportTime?: string;
+  rawOb?: string;
+}
+
+async function fetchAwcRecentMetars(stations: string[]): Promise<RawMetarRow[]> {
+  const out: RawMetarRow[] = [];
+  const chunkSize = 200;
+  for (let i = 0; i < stations.length; i += chunkSize) {
+    const ids = stations.slice(i, i + chunkSize).join(",");
+    const rows = await fetchJson<AwcMetarRow[]>("https://aviationweather.gov/api/data/metar", {
+      query: { ids, format: "json", hours: "4" },
+      timeoutMs: 45_000,
+      retries: 2,
+    });
+    for (const row of rows ?? []) {
+      if (!row.icaoId || !row.rawOb) continue;
+      const d = row.reportTime ? new Date(row.reportTime) : null;
+      const valid = d && Number.isFinite(d.getTime())
+        ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`
+        : "";
+      out.push({ station: row.icaoId, valid, metar: row.rawOb });
+    }
   }
   return out;
 }
@@ -307,7 +332,13 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
   const cat = aomcStations();
   const ids = cat.map((s) => s.id);
 
-  const metars = await fetchRecentMetars(ids, hoursBack);
+  let metars: RawMetarRow[] = [];
+  try {
+    metars = await fetchRecentMetars(ids, hoursBack);
+  } catch (e) {
+    console.warn("[scan] IEM scan failed; falling back to AWC METAR API:", e);
+    metars = await fetchAwcRecentMetars(ids);
+  }
   const byStation = new Map<string, RawMetarRow[]>();
   for (const m of metars) {
     const k = normStationKey(m.station);

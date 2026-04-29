@@ -18,6 +18,7 @@
  */
 
 import { scanNetwork, scanSummary } from "./iem";
+import { observeMs, setGauge } from "./metrics";
 import type { ScanRow, StationStatus } from "./types";
 
 interface ScanState {
@@ -28,7 +29,9 @@ interface ScanState {
   duration_ms: number;
 }
 
-const TTL_MS = 5 * 60 * 1000;  // 5 minutes — matches the upstream 5-min cron
+// A full scan touches IEM's IP-limited ASOS endpoint. Keep cached scans for
+// 15 minutes so page traffic never translates into repeated upstream sweeps.
+const TTL_MS = 15 * 60 * 1000;
 
 let _cache: ScanState | null = null;
 let _inflight: Promise<ScanState> | null = null;
@@ -37,10 +40,13 @@ async function runScan(): Promise<ScanState> {
   const t0 = Date.now();
   const rows = await scanNetwork(4);
   const { counts, total } = scanSummary(rows);
+  const duration = Date.now() - t0;
+  observeMs("owl_scan_duration", duration);
+  setGauge("owl_scan_rows", total);
   return {
     rows, counts, total,
     scanned_at: new Date().toISOString(),
-    duration_ms: Date.now() - t0,
+    duration_ms: duration,
   };
 }
 
@@ -48,7 +54,20 @@ function kickBackgroundRefresh(): void {
   if (_inflight) return;
   _inflight = runScan()
     .then((s) => { _cache = s; return s; })
-    .catch((e) => { console.warn("[scan] background refresh failed:", e); throw e; })
+    .catch((e) => {
+      console.warn("[scan] background refresh failed; keeping previous cache:", e);
+      if (_cache) return _cache;
+      return {
+        rows: [],
+        counts: {
+          CLEAN: 0, FLAGGED: 0, MISSING: 0, OFFLINE: 0,
+          INTERMITTENT: 0, RECOVERED: 0, "NO DATA": 0,
+        },
+        total: 0,
+        scanned_at: new Date().toISOString(),
+        duration_ms: 0,
+      };
+    })
     .finally(() => { _inflight = null; });
   // Explicitly don't await.
 }
@@ -70,3 +89,8 @@ export async function getScanFresh(): Promise<ScanState> {
 }
 
 export function getCachedScan(): ScanState | null { return _cache; }
+
+export function flushScanCache(): void {
+  _cache = null;
+  _inflight = null;
+}

@@ -6,6 +6,7 @@ dist/
 *.log
 .DS_Store
 .env*.local
+.env.proxmox
 .vercel
 *.tsbuildinfo
 next-env.d.ts
@@ -13,3 +14,5 @@ next-env.d.ts
 acr_log.txt
 acr_run_cab.log
 acr_run_*.log
+.claude/
+.serena/

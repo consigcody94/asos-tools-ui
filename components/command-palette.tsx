@@ -18,6 +18,7 @@ const NAV_HITS: Hit[] = [
   { kind: "nav", label: "Summary",      href: "/",            hint: "global network health" },
   { kind: "nav", label: "AOMC",         href: "/aomc",        hint: "per-station watchlist" },
   { kind: "nav", label: "Forecasters",  href: "/forecasters", hint: "SIGMET / AIRMET / PIREP / AFD" },
+  { kind: "nav", label: "NOAA Atlas",   href: "/noaa",        hint: "government APIs + modernization queue" },
   { kind: "nav", label: "Reports",      href: "/reports",     hint: "CSV + PNG exports" },
   { kind: "nav", label: "Stations",     href: "/stations",    hint: "920-station directory" },
   { kind: "nav", label: "Admin",        href: "/admin",       hint: "sources + scheduler" },

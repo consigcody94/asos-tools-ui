@@ -16,11 +16,11 @@
    generous spacing, subtle borders over heavy effects.
    ============================================================================= */
 
-@import "tailwindcss";
-
 /* Inter for UI, JetBrains Mono for codes (METAR / ICAO / timestamps).
    No display-font tax — Inter handles everything with a proper weight stack. */
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
    Design tokens.

@@ -10,9 +10,11 @@ export const metadata: Metadata = {
     "ASOS network operations console. 920 NWS / FAA / DOD weather stations, " +
     "live network scan, FAA WeatherCam loops, NWS NEXRAD radar, NESDIS GOES " +
     "satellite, AWC aviation hazards, NWS CAP alerts, USGS earthquakes, NHC " +
-    "tropical cyclones, NDBC buoys, NOAA SWPC space weather.",
+    "tropical cyclones, NDBC buoys, NOAA CO-OPS coastal observations, " +
+    "NOAA SWPC space weather, and a NOAA/NODD integration atlas.",
   applicationName: "OWL",
   authors: [{ name: "Cody Churchwell", url: "mailto:cto@sentinelowl.org" }],
+  icons: { icon: "/favicon.svg" },
 };
 
 export const viewport: Viewport = {
@@ -28,9 +30,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="flex min-h-dvh">
+        <div className="flex min-h-dvh flex-col sm:flex-row">
           <Sidebar />
-          <main className="flex-1 px-6 py-4 pb-12 max-w-[1640px]">{children}</main>
+          <main className="flex-1 min-w-0 px-4 pb-12 pt-0 sm:px-6 sm:py-4 max-w-[1640px]">{children}</main>
         </div>
         <NewsTicker />
         <CommandPalette />

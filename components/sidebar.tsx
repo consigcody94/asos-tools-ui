@@ -7,7 +7,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Activity, BarChart3, Globe, Info, MapPin, Settings, Cloud,
+  Activity, BarChart3, Globe, Info, MapPin, Settings, Cloud, Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,7 @@ const NAV: { href: string; label: string; icon: typeof Globe }[] = [
   { href: "/",            label: "Summary",     icon: Globe },
   { href: "/aomc",        label: "AOMC",        icon: Activity },
   { href: "/forecasters", label: "Forecasters", icon: Cloud },
+  { href: "/noaa",        label: "NOAA Atlas",  icon: Database },
   { href: "/reports",     label: "Reports",     icon: BarChart3 },
   { href: "/stations",    label: "Stations",    icon: MapPin },
   { href: "/admin",       label: "Admin",       icon: Settings },
@@ -33,17 +34,17 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
   return (
     <aside
       className="
-        w-[240px] shrink-0 h-dvh sticky top-0
-        border-r border-[color:var(--color-border)]
+        w-full sm:w-[240px] shrink-0 sm:h-dvh sm:sticky sm:top-0 z-40
+        border-b sm:border-b-0 sm:border-r border-[color:var(--color-border)]
         bg-[color:var(--color-surface)]
         flex flex-col
       "
     >
       {/* Brand */}
-      <div className="px-5 pt-5 pb-4 border-b border-[color:var(--color-border)]">
+      <div className="px-3 py-2 sm:px-5 sm:pt-5 sm:pb-4 border-b border-[color:var(--color-border)]">
         <div className="flex items-center gap-2">
           <div
-            className="w-7 h-7 rounded-md flex items-center justify-center text-white font-semibold text-sm"
+            className="w-6 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center text-white font-semibold text-sm"
             style={{ background: "var(--color-accent-strong)" }}
             aria-hidden
           >
@@ -53,7 +54,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
             <div className="text-[0.95rem] font-semibold leading-tight text-[color:var(--color-fg)]">
               OWL
             </div>
-            <div className="text-[0.62rem] tracking-[0.1em] uppercase text-[color:var(--color-fg-muted)] leading-tight">
+            <div className="hidden text-[0.62rem] tracking-[0.1em] uppercase text-[color:var(--color-fg-muted)] leading-tight sm:block">
               Observation Watch Log
             </div>
           </div>
@@ -62,7 +63,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
 
       {/* Network pulse (compact) */}
       {pulse && (
-        <div className="px-5 py-3 border-b border-[color:var(--color-border)]">
+        <div className="hidden sm:block px-5 py-3 border-b border-[color:var(--color-border)]">
           <div className="noc-h3 mb-2 text-[0.62rem]">Network Pulse</div>
           <div className="grid grid-cols-3 gap-1.5">
             <PulseCell label="Clean"   value={pulse.clean}   tone="ok"   />
@@ -73,7 +74,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
       )}
 
       {/* Nav */}
-      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+      <nav className="sm:flex-1 px-2 py-1.5 sm:py-3 sm:space-y-0.5 sm:overflow-y-auto flex flex-nowrap overflow-x-auto sm:block gap-1">
         {NAV.map((item) => {
           const active =
             item.href === "/"
@@ -85,7 +86,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-2.5 px-3 py-1.5 rounded-md",
+                "flex items-center gap-2 px-2.5 py-1.5 sm:gap-2.5 sm:px-3 rounded-md shrink-0",
                 "text-[0.85rem] font-medium transition-colors",
                 active
                   ? "bg-[color:var(--color-accent-soft)] text-[color:var(--color-fg)]"
@@ -104,7 +105,7 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
       </nav>
 
       {/* Author credit — replaces the HF link. */}
-      <div className="px-5 py-4 border-t border-[color:var(--color-border)]">
+      <div className="hidden sm:block px-5 py-4 border-t border-[color:var(--color-border)]">
         <div className="text-[0.68rem] leading-relaxed text-[color:var(--color-fg-dim)]">
           Made by{" "}
           <a

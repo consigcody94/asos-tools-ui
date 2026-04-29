@@ -17,6 +17,7 @@
 export type FetchOk<T> = { ok: true; status: number; data: T; headers: Headers };
 export type FetchErr = { ok: false; status: number; error?: string };
 export type FetchResult<T> = FetchOk<T> | FetchErr;
+import { inc, observeMs } from "./metrics";
 
 const DEFAULT_UA = "owl-ui/2.0 (asos-tools-ui; github.com/consigcody94/asos-tools-ui)";
 
@@ -27,14 +28,22 @@ const DEFAULT_UA = "owl-ui/2.0 (asos-tools-ui; github.com/consigcody94/asos-tool
  *    - `emp:`  derived empirically from observed 429 behaviour
  *    - `safe:` conservative guess where no doc exists
  */
-export const HOST_LIMITS: Record<string, { capacity: number; refillPerSec: number; note: string }> = {
-  // IEM CGI — asos.py still leaks 429s at 3 req/s sustained. Settling on
-  // 2 req/s (capacity 2, refill 2/s) gets the full 920-station scan
-  // through without batch drops; cost is ~25s extra wall-clock.
-  "mesonet.agron.iastate.edu":    { capacity: 2,  refillPerSec: 2,    note: "emp: 2 req/s (asos.py leaks 429 at 3)" },
+interface HostLimit {
+  capacity: number;
+  refillPerSec: number;
+  note: string;
+  cooldownOnRateLimitMs?: number;
+}
 
-  // NWS documented: ~5 req/s sustained. UA required.
-  "api.weather.gov":                { capacity: 5,  refillPerSec: 5,    note: "doc: 5 req/s, UA required"        },
+export const HOST_LIMITS: Record<string, HostLimit> = {
+  // IEM ASOS CGI documents an IP-based abuse limit but not a numeric quota.
+  // Use fewer large station batches and pace them hard; if IEM returns its
+  // text-body "slow down" response, cool the whole host for 10 minutes.
+  "mesonet.agron.iastate.edu":    { capacity: 1,  refillPerSec: 0.2,  note: "doc: IP-based rate limit; OWL paces to 1 req/5s", cooldownOnRateLimitMs: 10 * 60_000 },
+
+  // NWS documents reasonable rate limits but intentionally does not publish
+  // the number. Keep a real UA and stay conservative.
+  "api.weather.gov":                { capacity: 2,  refillPerSec: 2,    note: "doc: unpublished reasonable limits; UA required" },
 
   // AWC: no doc; be gentle to keep PIREP + SIGMET + METAR chunked calls clean.
   "aviationweather.gov":            { capacity: 2,  refillPerSec: 2,    note: "safe: 2 req/s (undocumented)"     },
@@ -48,6 +57,10 @@ export const HOST_LIMITS: Record<string, { capacity: number; refillPerSec: numbe
   // NDBC: one .txt per buoy; avoid hammering the realtime2 endpoint.
   "www.ndbc.noaa.gov":              { capacity: 1,  refillPerSec: 1,    note: "1 req/s per station"              },
 
+  // NOAA CO-OPS data + metadata APIs. Keep station metadata cached and pace
+  // per-product latest calls to avoid bursty coastal drill-panel loads.
+  "api.tidesandcurrents.noaa.gov":  { capacity: 1,  refillPerSec: 0.5,  note: "doc: throttle under load; sleep between calls" },
+
   // NOAA SWPC — strict: docs say not more than ~1/min per feed.
   "services.swpc.noaa.gov":         { capacity: 1,  refillPerSec: 1/60, note: "doc: ≤1 req/min per feed (strict)"},
 
@@ -60,21 +73,30 @@ export const HOST_LIMITS: Record<string, { capacity: number; refillPerSec: numbe
   // CDN image hosts — server-side we only HEAD these rarely; still cap.
   "radar.weather.gov":              { capacity: 10, refillPerSec: 10,   note: "NWS RIDGE CDN"                    },
   "cdn.star.nesdis.noaa.gov":       { capacity: 10, refillPerSec: 10,   note: "NESDIS CDN"                       },
+  "eonet.gsfc.nasa.gov":            { capacity: 2,  refillPerSec: 1,    note: "NASA EONET API"                   },
+  "celestrak.org":                  { capacity: 2,  refillPerSec: 1,    note: "CelesTrak GP orbital elements"    },
 
   // RSS / news feeds. Generally a single call per feed per scan.
   "www.noaa.gov":                   { capacity: 1,  refillPerSec: 1,    note: "RSS; 1 req/s"                     },
   "www.faa.gov":                    { capacity: 1,  refillPerSec: 1,    note: "RSS; 1 req/s"                     },
   "www.ntsb.gov":                   { capacity: 1,  refillPerSec: 1,    note: "RSS; 1 req/s"                     },
   "www.weather.gov":                { capacity: 1,  refillPerSec: 1,    note: "RSS; 1 req/s"                     },
+  "water.noaa.gov":                 { capacity: 1,  refillPerSec: 1,    note: "NWPS docs/static metadata"        },
+  "api.water.noaa.gov":             { capacity: 2,  refillPerSec: 1,    note: "safe: NWPS API"                   },
+  "nomads.ncep.noaa.gov":           { capacity: 1,  refillPerSec: 0.5,  note: "safe: NOMADS GRIB filters"        },
+  "mrms.ncep.noaa.gov":             { capacity: 1,  refillPerSec: 0.5,  note: "safe: MRMS HTTP GRIB2"            },
+  "mapservices.weather.noaa.gov":   { capacity: 4,  refillPerSec: 2,    note: "NWS OGC/ArcGIS map services"      },
+  "madis-data.ncep.noaa.gov":       { capacity: 1,  refillPerSec: 0.5,  note: "MADIS web services"               },
 };
 
-const DEFAULT_LIMIT = { capacity: 2, refillPerSec: 2, note: "safe default" };
+const DEFAULT_LIMIT: HostLimit = { capacity: 1, refillPerSec: 1, note: "safe default" };
 
 // ---- Token bucket per host -------------------------------------------------
 
 interface Bucket { tokens: number; last: number; cap: number; refill: number; }
 const buckets = new Map<string, Bucket>();
 const hostQueues = new Map<string, Promise<void>>();
+const hostCooldownUntil = new Map<string, number>();
 
 function getBucket(host: string): Bucket {
   const b = buckets.get(host);
@@ -106,6 +128,12 @@ async function takeToken(host: string): Promise<void> {
   hostQueues.set(host, prev.then(() => gate));
   await prev;
   try {
+    const cooldownUntil = hostCooldownUntil.get(host) ?? 0;
+    const cooldownWaitMs = cooldownUntil - Date.now();
+    if (cooldownWaitMs > 0) {
+      await new Promise((r) => setTimeout(r, cooldownWaitMs));
+    }
+
     for (;;) {
       const b = getBucket(host);
       drip(b);
@@ -118,6 +146,16 @@ async function takeToken(host: string): Promise<void> {
     }
   } finally {
     release();
+  }
+}
+
+export function applyHostCooldown(host: string, ms: number, reason = "rate limit"): void {
+  if (!host || ms <= 0) return;
+  const until = Date.now() + ms;
+  const current = hostCooldownUntil.get(host) ?? 0;
+  if (until > current) {
+    hostCooldownUntil.set(host, until);
+    console.warn(`[owl-fetch] ${host} cooldown ${Math.ceil(ms / 1000)}s (${reason})`);
   }
 }
 
@@ -169,6 +207,7 @@ export async function owlFetch<T = unknown>(
   for (let attempt = 0; attempt < retries; attempt++) {
     if (host) await takeToken(host);
 
+    const started = Date.now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
@@ -193,10 +232,13 @@ export async function owlFetch<T = unknown>(
         } catch {
           data = null;
         }
+        observeMs("owl_api_latency", Date.now() - started, { host, status: r.status });
         return { ok: true, status: r.status, data: data as T, headers: r.headers };
       }
 
       if (!retryable.has(r.status)) {
+        inc("owl_api_errors_total", { host, status: r.status });
+        observeMs("owl_api_latency", Date.now() - started, { host, status: r.status });
         return { ok: false, status: r.status, error: r.statusText };
       }
 
@@ -206,11 +248,19 @@ export async function owlFetch<T = unknown>(
       const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
         ? Math.min(30_000, retryAfter * 1000)
         : Math.min(15_000, 500 * Math.pow(2, attempt));
+      const policyCooldown = HOST_LIMITS[host]?.cooldownOnRateLimitMs ?? 0;
+      if (r.status === 429 || r.status === 503) {
+        applyHostCooldown(host, Math.max(policyCooldown, backoffMs), `${r.status}`);
+      }
       console.warn(`[owl-fetch] ${host} ${r.status}; attempt ${attempt + 1}/${retries}; backoff ${backoffMs}ms`);
+      inc("owl_api_errors_total", { host, status: r.status });
+      observeMs("owl_api_latency", Date.now() - started, { host, status: r.status });
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[owl-fetch] ${host} error on attempt ${attempt + 1}/${retries}: ${msg}`);
+      inc("owl_api_errors_total", { host, status: "exception" });
+      observeMs("owl_api_latency", Date.now() - started, { host, status: "exception" });
       const backoffMs = Math.min(10_000, 400 * Math.pow(2, attempt));
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
     } finally {
