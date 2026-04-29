@@ -64,12 +64,15 @@ export function Globe({
       const { default: GlobeGL } = await import("globe.gl");
       if (cancelled || !containerRef.current) return;
 
-      // All markers (stations + satellites + events) render via WebGL points.
-      // pointsMerge(true) batches the entire 918+12 point set into ONE
-      // instanced draw call. With merge=false we were issuing ~930 draw
-      // calls per frame, which is what made the user's CPU/GPU melt.
-      // Field accessors (lat/lng/altitude/color/size) match globe.gl's
-      // default property names so no per-point function dispatch fires.
+      // Markers render as un-merged WebGL cylinder points. We *can't* use
+      // pointsMerge(true) because globe.gl's raycaster only hits individual
+      // mesh objects — merging disables both hover labels AND click. The
+      // user expects to click any station to drill in, so merge stays off.
+      // To keep perf honest with ~930 draw calls, we use the cheapest
+      // possible geometry: pointResolution(4) (square cross-section, 8
+      // triangles per cylinder) and small radii. Field-name accessors are
+      // strings so globe.gl reads them once instead of dispatching a JS
+      // function per point per frame.
 
       const g = new GlobeGL(containerRef.current)
         .backgroundColor("rgba(5, 8, 22, 1)")
@@ -82,8 +85,8 @@ export function Globe({
         .showAtmosphere(true)
         .atmosphereColor("#38bdf8")
         .atmosphereAltitude(0.18)
-        .pointsMerge(true)
-        .pointResolution(6)
+        .pointsMerge(false)
+        .pointResolution(4)
         .pointsTransitionDuration(0)
         .pointAltitude("altitude")
         .pointRadius("size")

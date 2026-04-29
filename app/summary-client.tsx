@@ -360,15 +360,21 @@ export function SummaryClient() {
     ];
   }, [eventPoints, satellitePoints, showEvents, showSatellites, showStations, stationPoints]);
 
-  // Live counts for the floating overlay summary.
+  // Live counts for the floating overlay summary. We separate every
+  // status the classifier can emit so the displayed numbers always sum
+  // to the station total. Previously we collapsed everything that
+  // wasn't CLEAN/FLAGGED/MISSING into "OTHER" and never showed it.
   const counts = useMemo(() => {
-    const c = { CLEAN: 0, FLAGGED: 0, MISSING: 0, OTHER: 0 };
+    const c = { CLEAN: 0, FLAGGED: 0, MISSING: 0, INTERMITTENT: 0, RECOVERED: 0, OFFLINE: 0, NO_DATA: 0 };
     for (const p of stationPoints) {
       const s = (p.label || "").split("·").pop()?.trim() || "";
       if (s === "CLEAN") c.CLEAN++;
       else if (s === "FLAGGED") c.FLAGGED++;
       else if (s === "MISSING") c.MISSING++;
-      else c.OTHER++;
+      else if (s === "INTERMITTENT") c.INTERMITTENT++;
+      else if (s === "RECOVERED") c.RECOVERED++;
+      else if (s === "OFFLINE") c.OFFLINE++;
+      else c.NO_DATA++;
     }
     return c;
   }, [stationPoints]);
@@ -405,9 +411,29 @@ export function SummaryClient() {
               <span className="text-noc-border-strong px-1.5">|</span>
               <span className="text-noc-ok">{counts.CLEAN}</span> clean
               <span className="text-noc-border-strong px-1.5">|</span>
+              <span className="text-noc-amber">{counts.INTERMITTENT}</span> intermittent
+              <span className="text-noc-border-strong px-1.5">|</span>
               <span className="text-noc-warn">{counts.FLAGGED}</span> flagged
               <span className="text-noc-border-strong px-1.5">|</span>
               <span className="text-noc-crit">{counts.MISSING}</span> missing
+              {counts.RECOVERED > 0 && (
+                <>
+                  <span className="text-noc-border-strong px-1.5">|</span>
+                  <span className="text-noc-cyan">{counts.RECOVERED}</span> recovered
+                </>
+              )}
+              {counts.OFFLINE > 0 && (
+                <>
+                  <span className="text-noc-border-strong px-1.5">|</span>
+                  <span className="text-noc-dim">{counts.OFFLINE}</span> offline
+                </>
+              )}
+              {counts.NO_DATA > 0 && (
+                <>
+                  <span className="text-noc-border-strong px-1.5">|</span>
+                  <span className="text-noc-dim">{counts.NO_DATA}</span> no-data
+                </>
+              )}
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">

@@ -277,7 +277,14 @@ function classify(
       probable_reason: "maintenance-check indicator ($) set on latest METAR",
     };
   }
-  if (flaggedInWindow === 0 && missingBucketCount === 0) {
+  // CLEAN tolerates one missing hourly bucket: ASOS METARs go out
+  // hourly with special obs at 20/40, and a single delayed report in
+  // a 4-hour window is normal noise — not a signal worth surfacing.
+  // INTERMITTENT only fires when ≥2 hours are missing in the window,
+  // which mirrors the operator-meaningful threshold. Without this,
+  // 65% of the network was being flagged "intermittent" on routine
+  // reporting jitter.
+  if (flaggedInWindow === 0 && missingBucketCount <= 1) {
     return {
       status: "CLEAN",
       minutes_since_last_report: minsSinceLast,
