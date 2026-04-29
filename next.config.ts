@@ -2,15 +2,16 @@ import type { NextConfig } from "next";
 
 /** O.W.L. Next.js config.
  *
- *  - `output: "standalone"` emits a self-contained build bundle for
- *    Azure Container Apps / Vercel / Docker — no runtime npm install.
- *  - `images.remotePatterns` allowlists upstream image CDNs we render:
- *    FAA WeatherCams, NESDIS GOES, IEM radar, NWS RIDGE (radar.weather.gov).
- *  - Everything ASOS-related is server-side in `lib/server/*` and served
- *    through this app's own `/api/*` routes — no external backend.
+ *  We deliberately do NOT use `output: "standalone"` on Next 16.2.x —
+ *  the Turbopack-built standalone bundle fails to emit
+ *  `required-server-files.json` for ISR routes, which breaks the
+ *  whole server. Running `next start` against the regular `.next/`
+ *  build sidesteps the issue and adds <50 MB of node_modules at the
+ *  runtime, which is fine on the LXC.
+ *
+ *  `images.remotePatterns` allowlists upstream image CDNs we render.
  */
 const config: NextConfig = {
-  output: "standalone",
   reactStrictMode: true,
   // App Insights has optional native deps (mysql/postgres/oracle hooks)
   // that we don't use; externalising it stops Webpack from trying to
