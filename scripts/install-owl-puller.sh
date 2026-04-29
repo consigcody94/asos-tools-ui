@@ -83,6 +83,12 @@ EOF
 # Make sure git is installed (required for the pull).
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q git >/dev/null
 
+# /opt/owl is owned by user `owl` but the puller runs as root via
+# systemd. Without this entry git refuses to operate on the tree with
+# "dubious ownership". --system writes /etc/gitconfig so the policy
+# applies regardless of which HOME the systemd unit gets.
+git config --system --add safe.directory /opt/owl 2>/dev/null || true
+
 systemctl daemon-reload
 systemctl enable --now owl-puller.timer
 echo "--- timer status ---"
