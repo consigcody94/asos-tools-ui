@@ -25,8 +25,12 @@ interface OverlayDef {
 // Use `outFields=*` + `f=geojson` for FeatureServer / MapServer layers.
 const OVERLAYS: Record<string, OverlayDef> = {
   // Active WWA polygons (warnings / watches / advisories) — operational hot.
+  // Filter to currently-active records: end timestamp in the future.
+  // The full feature class is ~41 MB; the active subset is typically
+  // a few hundred KB and fits an operator's view fine.
   wwa: {
     url: "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer/1/query",
+    whereClause: "end >= CURRENT_TIMESTAMP",
   },
   // WFO (Weather Forecast Office) county-warning-area boundaries.
   wfo: {

@@ -11,7 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { chat } from "@/lib/openai";
-import { getScanFresh } from "@/lib/server/scan-cache";
+import { getScan, getScanReady } from "@/lib/server/scan-cache";
 import { fetchAirSigmet } from "@/lib/server/awc";
 import { trackEvent, trackMetric } from "@/lib/telemetry";
 
@@ -41,9 +41,14 @@ export async function POST(req: Request) {
     focus = body.focus;
   } catch { /* empty body OK */ }
 
-  // Pull live context in parallel: scan results + active SIGMETs.
+  // Pull live context. Use the *cached* scan — getScanFresh() blocks
+  // on a network fetch that can take 60+ seconds when IEM is in
+  // rate-limit cooldown, which made the AI Brief button appear hung.
+  // The scan cache is warm-restored at boot and refreshed every 15
+  // min in the background; that's plenty fresh for a shift brief.
+  await getScanReady().catch(() => null);
   const [scan, sigmetsRaw] = await Promise.all([
-    getScanFresh().catch(() => null),
+    Promise.resolve(getScan()),
     fetchAirSigmet().catch(() => [] as Array<Record<string, unknown>>),
   ]);
   const scanRows: ScanRow[] = (scan?.rows as unknown as ScanRow[]) || [];
