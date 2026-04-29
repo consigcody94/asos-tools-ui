@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Globe, type GlobePath, type GlobePoint } from "@/components/globe";
+import { Globe, type GlobePoint } from "@/components/globe";
 import { DrillPanel } from "@/components/drill-panel";
 import { ExternalLink, Flame, Map, Orbit, Play, RotateCcw, Satellite, Waves } from "lucide-react";
 import { STATIONS } from "@/lib/data/stations";
@@ -120,21 +120,15 @@ function satelliteLiveImage(
   };
   const layer = gibsLayer[sat.id];
   if (!layer) return null;
-  // 30 deg half-window around the sub-point. NASA GIBS yesterday is most
-  // reliable because today's swath isn't always processed yet.
-  // GIBS WMS does not support antimeridian-crossing bboxes (minLon must
-  // be < maxLon and both within [-180,180]), so when the sub-point is
-  // close enough to ±180 that the box would wrap, we slide the window
-  // to stay on one side of the antimeridian.
+  // For non-GEO sats we want imagery that's reliably populated, not the
+  // black night-side rectangle the satellite's *current* sub-point lands
+  // on. NASA GIBS layers are global daily mosaics; rendering the whole
+  // world with the satellite's instrument as the source gives a real
+  // composite no matter where it is in its orbit.
+  // We use yesterday's date because today's swath isn't always processed
+  // yet (GIBS lag).
   const day = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
-  const half = 30;
-  const minLat = Math.max(-90, sat.lat - half);
-  const maxLat = Math.min(90, sat.lat + half);
-  let minLon = sat.lon - half;
-  let maxLon = sat.lon + half;
-  if (minLon < -180) { minLon = -180; maxLon = -180 + 2 * half; }
-  if (maxLon > 180)  { maxLon = 180;  minLon = 180  - 2 * half; }
-  const bbox = `${minLat.toFixed(2)},${minLon.toFixed(2)},${maxLat.toFixed(2)},${maxLon.toFixed(2)}`;
+  const bbox = `-90,-180,90,180`;
   const url = `https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=${layer}&STYLES=&FORMAT=image/jpeg&SRS=EPSG:4326&WIDTH=720&HEIGHT=540&BBOX=${bbox}&TIME=${day}`;
   return { url, caption: `NASA GIBS · ${layer.replace(/_/g, " ")} · ${day}`, layer };
 }
@@ -345,23 +339,6 @@ export function SummaryClient() {
     }));
   }, [satellites]);
 
-  const satellitePaths: GlobePath[] = useMemo(() => {
-    if (!showSatellites) return [];
-    return satellites
-      .filter((sat) => sat.track?.length > 1)
-      .map((sat) => {
-        const visualAltitude = sat.altitude_km > 5000 ? 0.12 : 0.045;
-        return {
-          id: `SATPATH:${sat.id}`,
-          color: SATELLITE_COLOR[sat.group],
-          points: sat.track.map((point) => ({
-            lat: point.lat,
-            lng: point.lon,
-            altitude: visualAltitude,
-          })),
-        };
-      });
-  }, [satellites, showSatellites]);
 
   const points: GlobePoint[] = useMemo(() => {
     return [
@@ -483,7 +460,7 @@ export function SummaryClient() {
 
           <Globe
             points={points}
-            paths={satellitePaths}
+            paths={[]}
             height={720}
             className="h-[calc(100dvh-190px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
             autoRotate={autoRotate}
