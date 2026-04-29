@@ -42,8 +42,11 @@ if [ "${CHANGED:-0}" = "1" ]; then
   chown -R owl:owl /opt/owl
   # We don't use output:standalone (Next 16.2 + Turbopack emits it
   # incompletely). owl.service runs `next start` against the regular
-  # .next/ output, so we just need a fresh install + build, then the
-  # systemd restart picks up the new code.
+  # .next/ output. Crucially: nuke .next before building. Turbopack's
+  # incremental cache has shipped builds that silently exclude newly-
+  # added route files, leading to phantom 404s. A clean build is the
+  # only reliable signal that all current sources got compiled.
+  rm -rf .next
   runuser -u owl -- npm install --no-audit --no-fund >/var/log/owl-puller-npm.log 2>&1
   runuser -u owl -- npm run build  >>/var/log/owl-puller-npm.log 2>&1
   systemctl restart owl
