@@ -417,16 +417,17 @@ export function SummaryClient({
     }));
   }, [statusByStation]);
 
-  // Build map overlays from the filter state. NWS RIDGE national radar
-  // mosaic via the OpenFreeMap-style WMS tiles (CONUS-only; the layer
-  // simply isn't visible outside that footprint). RIDGE serves PNG
-  // tiles publicly with per-product naming.
+  // Build map overlays from the filter state. NEXRAD reflectivity via
+  // the Iowa State Mesonet tile cache (the same source the NWS internal
+  // Status Map uses) — public, no auth, well-cached, sub-second
+  // responses. The previous opengeo WMS attempt was speculative; this
+  // one is operationally proven.
   const mapOverlays: MapOverlay[] = useMemo(() => {
     return [
       {
-        id: "ridge-base-reflectivity",
+        id: "nexrad-n0q",
         tiles: [
-          "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows?service=WMS&request=GetMap&version=1.1.1&layers=conus_bref_qcd&styles=&format=image/png&transparent=true&srs=EPSG:3857&width=256&height=256&bbox={bbox-epsg-3857}",
+          "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q/{z}/{x}/{y}.png",
         ],
         opacity: filters.overlays.radarOpacity,
         visible: filters.overlays.radar,
@@ -472,6 +473,7 @@ export function SummaryClient({
             points={points}
             paths={[]}
             overlays={mapOverlays}
+            projection={filters.projection}
             height={720}
             className="h-[calc(100dvh-200px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
             focus={focus}

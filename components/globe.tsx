@@ -55,6 +55,9 @@ interface Props {
   onPointClick?: (p: GlobePoint) => void;
   /** Optional raster overlays (radar, etc.). Toggle by setting visible. */
   overlays?: MapOverlay[];
+  /** "mercator" (flat 2D) or "globe" (3D orthographic). MapLibre v5+ has
+   *  native globe projection — no component swap, just a runtime toggle. */
+  projection?: "mercator" | "globe";
 }
 
 function escapeHtml(s: string): string {
@@ -76,6 +79,7 @@ export function Globe({
   focus = null,
   onPointClick,
   overlays = [],
+  projection = "mercator",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -214,6 +218,23 @@ export function Globe({
       essential: true,
     });
   }, [focus]);
+
+  // Switch projection (mercator <-> globe) without re-mounting.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      try {
+        // setProjection is a v5+ API; old MapLibre ignores it.
+        (map as unknown as { setProjection?: (p: { type: string }) => void })
+          .setProjection?.({ type: projection });
+      } catch (err) {
+        console.warn("[map] setProjection failed:", (err as Error).message);
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [projection]);
 
   // Sync raster overlays. Each overlay renders below the points layer.
   useEffect(() => {

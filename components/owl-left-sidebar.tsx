@@ -12,6 +12,7 @@ export interface OwlFilterState {
   rotationPauseSec: number;
   programs: { ASOS: boolean; AWIPS: boolean; BUOY: boolean; FACILITY: boolean; NWR: boolean; RADAR: boolean; UPPERAIR: boolean };
   overlays: { radar: boolean; radarOpacity: number };
+  projection: "mercator" | "globe";
 }
 
 export const DEFAULT_FILTERS: OwlFilterState = {
@@ -22,6 +23,7 @@ export const DEFAULT_FILTERS: OwlFilterState = {
   rotationPauseSec: 5,
   programs: { ASOS: true, AWIPS: false, BUOY: false, FACILITY: false, NWR: false, RADAR: false, UPPERAIR: false },
   overlays: { radar: false, radarOpacity: 0.6 },
+  projection: "mercator",
 };
 
 export const REGIONS = [
@@ -111,6 +113,21 @@ export function OwlLeftSidebar({
             <span>seconds</span>
           </div>
         )}
+      </Card>
+
+      <Card title="View">
+        <div className="flex gap-1">
+          <button
+            onClick={() => patch({ projection: "mercator" })}
+            className={`noc-btn flex-1 px-2 py-1 text-[0.66rem] ${filters.projection === "mercator" ? "noc-btn-primary" : ""}`}
+            title="Flat Web-Mercator map (CONUS-friendly)"
+          >2D Map</button>
+          <button
+            onClick={() => patch({ projection: "globe" })}
+            className={`noc-btn flex-1 px-2 py-1 text-[0.66rem] ${filters.projection === "globe" ? "noc-btn-primary" : ""}`}
+            title="3D orthographic globe (natural Earth)"
+          >3D Globe</button>
+        </div>
       </Card>
 
       <Card title="Region" icon={<MapPinned size={12} />}>
