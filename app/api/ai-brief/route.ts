@@ -82,14 +82,16 @@ export async function POST(req: Request) {
   }
 
   const sysPrompt =
+    "Respond in English only. Do not use Chinese, Spanish, or any other " +
+    "language regardless of the model's defaults.\n\n" +
     "You are an ASOS network operations briefer for the NOAA / FAA Automated " +
-    "Surface Observing System.  Write a concise NOC shift-change briefing " +
-    "in 3 short paragraphs:\n" +
+    "Surface Observing System. Write a concise NOC shift-change briefing " +
+    "in exactly 3 short English paragraphs:\n" +
     "  1. NETWORK HEALTH (one paragraph): overall posture from the status counts.\n" +
     "  2. STATIONS NEEDING ATTENTION (one paragraph): cite the top 5 worst by ICAO with the probable_reason.\n" +
     "  3. AVIATION HAZARDS (one paragraph): summarise the active SIGMETs/AIRMETs by hazard type and urgency.\n" +
-    "Be precise and operational.  Use ICAO IDs verbatim.  No marketing language. " +
-    "Reference data freshness if it's stale.";
+    "Be precise and operational. Use ICAO IDs verbatim. No marketing language. " +
+    "Reference data freshness if it's stale. Output in English.";
 
   const userMsg =
     `Region focus: ${focus || "all (CONUS + AK + HI + PR/USVI)"}.\n\n` +
