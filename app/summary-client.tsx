@@ -614,18 +614,48 @@ export function SummaryClient({
             className="h-[calc(100dvh-200px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
             focus={focus}
             onPointClick={(p) => {
-              if (p.kind === "satellite") {
+              // Satellite — drill the inline live-feed panel.
+              if (p.station.startsWith("SAT:")) {
                 const id = p.station.replace(/^SAT:/, "");
                 const sat = satellites.find((item) => item.id === id);
                 if (sat) focusSatellite(sat);
                 return;
               }
-              if (p.kind === "event") {
+              // EONET event — drill the event intel block.
+              if (p.station.startsWith("EONET:")) {
                 const id = p.station.replace(/^EONET:/, "");
                 const event = events.find((item) => item.id === id);
                 if (event) focusEvent(event);
                 return;
               }
+              // NEXRAD radar — find matching row, open drill panel.
+              if (p.station.startsWith("RADAR:")) {
+                const id = p.station.replace(/^RADAR:/, "");
+                const row = nexradRows.find((r) => r.station === id);
+                setStation({
+                  id, lat: p.lat, lng: p.lng,
+                  name: row?.name ?? `${id} NEXRAD`,
+                  state: row?.state,
+                  status: row?.status ?? "UP",
+                  probableReason: row?.reason ?? null,
+                  lastValid: row?.since ?? null,
+                });
+                return;
+              }
+              // NDBC buoy — find matching row, open drill panel.
+              if (p.station.startsWith("BUOY:")) {
+                const id = p.station.replace(/^BUOY:/, "");
+                const row = buoyRows.find((r) => r.station === id);
+                setStation({
+                  id, lat: p.lat, lng: p.lng,
+                  name: `Buoy ${id}`,
+                  status: row?.status ?? "UP",
+                  minutesSinceLast: row?.minutes_since,
+                  lastValid: row?.since ?? null,
+                });
+                return;
+              }
+              // ASOS — full drill including METAR.
               const catalog = STATIONS.find((item) => item.id === p.station);
               const scan = scanByStation[p.station];
               setStation({

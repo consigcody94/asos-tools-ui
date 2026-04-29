@@ -1,8 +1,9 @@
 "use client";
 
 /** AI Brief — modal-style panel that calls /api/ai-brief and streams
- *  the generated text into a copyable block.  Powered by Azure OpenAI
- *  gpt-5-mini against live OWL scan + AWC SIGMETs.
+ *  the generated text into a copyable block. Powered by whichever
+ *  OpenAI-compatible model is configured in /etc/owl.env (currently
+ *  GLM-5.1 via Ollama Cloud) against live OWL scan + AWC SIGMETs.
  */
 
 import { useState } from "react";
@@ -65,7 +66,7 @@ export function AiBrief() {
                   AI BRIEF · NOC SHIFT CHANGE
                 </div>
                 <div className="noc-label text-[0.65rem] mt-1">
-                  Azure OpenAI gpt-5-mini &middot; live scan + active SIGMETs &middot; not human-reviewed
+                  GLM-5.1 via Ollama Cloud &middot; live scan + active SIGMETs &middot; not human-reviewed
                 </div>
               </div>
               <button
