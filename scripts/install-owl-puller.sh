@@ -40,13 +40,12 @@ fi
 if [ "${CHANGED:-0}" = "1" ]; then
   echo "[puller] $(date -u +%FT%TZ) building $(git rev-parse --short HEAD)"
   chown -R owl:owl /opt/owl
-  runuser -u owl -- npm ci --no-audit --no-fund >/var/log/owl-puller-npm.log 2>&1
+  # We don't use output:standalone (Next 16.2 + Turbopack emits it
+  # incompletely). owl.service runs `next start` against the regular
+  # .next/ output, so we just need a fresh install + build, then the
+  # systemd restart picks up the new code.
+  runuser -u owl -- npm install --no-audit --no-fund >/var/log/owl-puller-npm.log 2>&1
   runuser -u owl -- npm run build  >>/var/log/owl-puller-npm.log 2>&1
-  rm -rf .next/standalone/.next/static .next/standalone/public
-  mkdir -p .next/standalone/.next
-  cp -a .next/static .next/standalone/.next/static
-  cp -a public .next/standalone/public
-  chown -R owl:owl .next/standalone
   systemctl restart owl
   echo "[puller] $(date -u +%FT%TZ) deploy complete"
 fi
