@@ -17,12 +17,20 @@ export async function GET() {
     start(controller) {
       const send = () => {
         const scan = getScan();
+        // Project to the slim shape the client actually consumes for
+        // the globe — full METAR text only travels via the per-station
+        // drill endpoint. ~80% size reduction over the wire.
+        const slim = (scan?.rows ?? []).map((r) => ({
+          station: r.station,
+          status: r.status,
+          minutes_since_last_report: r.minutes_since_last_report ?? null,
+        }));
         controller.enqueue(
           encoder.encode(`event: scan\n` + `data: ${JSON.stringify({
             scanned_at: scan?.scanned_at ?? null,
             duration_ms: scan?.duration_ms ?? null,
-            total: scan?.total ?? 0,
-            rows: scan?.rows ?? [],
+            total: slim.length,
+            rows: slim,
             warming: !scan,
           })}\n\n`),
         );

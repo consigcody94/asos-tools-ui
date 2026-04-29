@@ -152,7 +152,15 @@ function stationSpread(id: string, lat: number): { lat: number; lng: number } {
   };
 }
 
-export function SummaryClient() {
+interface SummaryClientProps {
+  initialStatuses?: Record<string, string>;
+  initialScannedAt?: string | null;
+}
+
+export function SummaryClient({
+  initialStatuses,
+  initialScannedAt: _initialScannedAt,
+}: SummaryClientProps = {}) {
   const [autoRotate, setAutoRotate] = useState(false);
   const [focus, setFocus] = useState<{ lat: number; lng: number; alt?: number } | null>(null);
   const [station, setStation] = useState<{
@@ -167,7 +175,11 @@ export function SummaryClient() {
     lastValid?: string | null;
     probableReason?: string | null;
   } | null>(null);
-  const [statusByStation, setStatusByStation] = useState<Record<string, string>>({});
+  // Seed status state from the SSR'd snapshot so the very first render
+  // has all 918 stations colored — no waiting on SSE / poll round-trips.
+  const [statusByStation, setStatusByStation] = useState<Record<string, string>>(
+    () => initialStatuses ?? {},
+  );
   const [scanByStation, setScanByStation] = useState<Record<string, ScanRow>>({});
   const [events, setEvents] = useState<EonetEvent[]>([]);
   const [satellites, setSatellites] = useState<LiveSatellite[]>([]);

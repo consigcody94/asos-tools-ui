@@ -15,6 +15,7 @@ import { KpiStrip } from "@/components/kpi-strip";
 import { SummaryClient } from "./summary-client";
 import { AiBrief } from "@/components/ai-brief";
 import { getHealth } from "@/lib/api";
+import { getScanReady } from "@/lib/server/scan-cache";
 // Importing for side-effect: starts App Insights at first render.
 import "@/lib/telemetry";
 
@@ -51,6 +52,22 @@ export default async function SummaryPage() {
     scanDurationS = h.last_tick_duration_s ?? null;
   } catch {
     // Leave counts at zero / status unknown.  The UI degrades gracefully.
+  }
+
+  // Inline the warm-restored scan into the SSR'd HTML so the client
+  // never has to wait for a round-trip before the globe can color in
+  // 918 stations. This collapses "page load → SSE connect → first
+  // frame" into a single network response.
+  const scan = await getScanReady().catch(() => null);
+  const initialStatuses: Record<string, string> = {};
+  if (scan?.rows) {
+    for (const r of scan.rows) {
+      if (r.station) initialStatuses[r.station] = (r.status || "NO DATA").toUpperCase();
+    }
+  }
+  const initialScannedAt = scan?.scanned_at ?? null;
+  if (scan?.counts) {
+    counts = { ...counts, ...(scan.counts as unknown as Partial<Counts>) };
   }
 
   const total =
@@ -101,7 +118,10 @@ export default async function SummaryPage() {
         <AiBrief />
       </header>
 
-      <SummaryClient />
+      <SummaryClient
+        initialStatuses={initialStatuses}
+        initialScannedAt={initialScannedAt}
+      />
 
       <KpiStrip
         total={total || 918}

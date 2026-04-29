@@ -93,12 +93,11 @@ export function Globe({
 
       const g = new GlobeGL(containerRef.current)
         .backgroundColor("rgba(5, 8, 22, 1)")
-        .globeImageUrl(
-          "//unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
-        )
-        .bumpImageUrl(
-          "//unpkg.com/three-globe/example/img/earth-topology.png",
-        )
+        // Self-hosted textures: same-origin, cached with the immutable
+        // headers Next gives /public/* (one-year max-age). Avoids the
+        // cross-origin DNS+TLS handshake to unpkg.com on first paint.
+        .globeImageUrl("/globe/earth-blue-marble.jpg")
+        .bumpImageUrl("/globe/earth-topology.png")
         .showAtmosphere(true)
         .atmosphereColor("#38bdf8")
         .atmosphereAltitude(0.18)
