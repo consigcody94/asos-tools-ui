@@ -568,8 +568,44 @@ export function SummaryClient({
         opacity: filters.overlays.radarOpacity,
         visible: filters.overlays.radar,
       },
+      // Active WWA polygons — fill with translucent red so warnings pop.
+      {
+        kind: "geojson", id: "wwa",
+        url: "/api/overlays/wwa",
+        lineColor: "#e25c6b", fillColor: "#e25c6b",
+        opacity: 0.6, lineWidth: 1,
+        visible: filters.overlays.wwa,
+      },
+      // WFO footprints — outline only, dim teal.
+      {
+        kind: "geojson", id: "wfo",
+        url: "/api/overlays/wfo",
+        lineColor: "#5fa8e6", lineWidth: 0.8,
+        opacity: 0.55, visible: filters.overlays.wfo,
+      },
+      // RFC — outline only, slightly thicker, magenta.
+      {
+        kind: "geojson", id: "rfc",
+        url: "/api/overlays/rfc",
+        lineColor: "#c084fc", lineWidth: 1.2,
+        opacity: 0.6, visible: filters.overlays.rfc,
+      },
+      // CWSU — yellow outline.
+      {
+        kind: "geojson", id: "cwsu",
+        url: "/api/overlays/cwsu",
+        lineColor: "#fbbf24", lineWidth: 1.0,
+        opacity: 0.6, visible: filters.overlays.cwsu,
+      },
+      // Time zones — neutral grey.
+      {
+        kind: "geojson", id: "timezones",
+        url: "/api/overlays/timezones",
+        lineColor: "#94a3b8", lineWidth: 0.6,
+        opacity: 0.45, visible: filters.overlays.timezones,
+      },
     ];
-  }, [filters.overlays.radar, filters.overlays.radarOpacity]);
+  }, [filters.overlays]);
 
   function focusStation(stationId: string) {
     const s = STATIONS.find((x) => x.id === stationId);

@@ -34,15 +34,28 @@ export interface GlobePath {
   points: { lat: number; lng: number; altitude?: number }[];
 }
 
-export interface MapOverlay {
-  id: string;
-  /** Tile URL template. {z}/{x}/{y} placeholders. */
-  tiles: string[];
-  /** 0..1, defaults 0.7 */
-  opacity?: number;
-  /** Layered above the basemap, below the points. */
-  visible: boolean;
-}
+export type MapOverlay =
+  | {
+      kind?: "raster";
+      id: string;
+      /** Tile URL template. {z}/{x}/{y} placeholders. */
+      tiles: string[];
+      opacity?: number;
+      visible: boolean;
+    }
+  | {
+      kind: "geojson";
+      id: string;
+      /** URL returning a FeatureCollection. Fetched once per visible toggle. */
+      url: string;
+      /** Stroke colour for line rendering. */
+      lineColor?: string;
+      /** Optional fill colour. Omitted → outline-only. */
+      fillColor?: string;
+      lineWidth?: number;
+      opacity?: number;
+      visible: boolean;
+    };
 
 interface Props {
   points: GlobePoint[];
@@ -236,44 +249,83 @@ export function Globe({
     else map.once("load", apply);
   }, [projection]);
 
-  // Sync raster overlays. Each overlay renders below the points layer.
+  // Sync raster + geojson overlays. Each overlay renders below the
+  // points layer. Layer naming: ov-line-* for boundaries, ov-fill-*
+  // for filled areas, ov-layer-* for raster tiles.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const apply = () => {
-      // Remove any overlays that are gone or hidden, then add/update visible ones.
+    const apply = async () => {
       const seen = new Set<string>();
       for (const ov of overlays) {
         const sid = `ov-${ov.id}`;
-        const lid = `ov-layer-${ov.id}`;
         seen.add(sid);
         if (!ov.visible) {
-          if (map.getLayer(lid)) map.removeLayer(lid);
+          for (const suffix of ["layer", "line", "fill"]) {
+            const lid = `ov-${suffix}-${ov.id}`;
+            if (map.getLayer(lid)) map.removeLayer(lid);
+          }
           if (map.getSource(sid)) map.removeSource(sid);
           continue;
         }
+        // RASTER (tile) overlay.
+        if (ov.kind !== "geojson") {
+          if (!map.getSource(sid)) {
+            map.addSource(sid, { type: "raster", tiles: ov.tiles, tileSize: 256 });
+            map.addLayer(
+              { id: `ov-layer-${ov.id}`, type: "raster", source: sid, paint: { "raster-opacity": ov.opacity ?? 0.7 } },
+              map.getLayer(LAYER_ID) ? LAYER_ID : undefined,
+            );
+          } else {
+            map.setPaintProperty(`ov-layer-${ov.id}`, "raster-opacity", ov.opacity ?? 0.7);
+          }
+          continue;
+        }
+        // GEOJSON overlay — fetch once on first visibility, then style.
         if (!map.getSource(sid)) {
-          map.addSource(sid, { type: "raster", tiles: ov.tiles, tileSize: 256 });
-          map.addLayer(
-            {
-              id: lid,
-              type: "raster",
-              source: sid,
-              paint: { "raster-opacity": ov.opacity ?? 0.7 },
-            },
-            // Insert before the points layer so points render on top.
-            map.getLayer(LAYER_ID) ? LAYER_ID : undefined,
-          );
+          try {
+            const r = await fetch(ov.url, { cache: "no-store" });
+            const data = await r.json();
+            map.addSource(sid, { type: "geojson", data });
+            if (ov.fillColor) {
+              map.addLayer(
+                {
+                  id: `ov-fill-${ov.id}`, type: "fill", source: sid,
+                  paint: { "fill-color": ov.fillColor, "fill-opacity": (ov.opacity ?? 0.4) * 0.6 },
+                },
+                map.getLayer(LAYER_ID) ? LAYER_ID : undefined,
+              );
+            }
+            map.addLayer(
+              {
+                id: `ov-line-${ov.id}`, type: "line", source: sid,
+                paint: {
+                  "line-color": ov.lineColor ?? "#88ccff",
+                  "line-width": ov.lineWidth ?? 1.2,
+                  "line-opacity": ov.opacity ?? 0.85,
+                },
+              },
+              map.getLayer(LAYER_ID) ? LAYER_ID : undefined,
+            );
+          } catch (err) {
+            console.warn(`[overlay ${ov.id}] fetch failed:`, (err as Error).message);
+          }
         } else {
-          map.setPaintProperty(lid, "raster-opacity", ov.opacity ?? 0.7);
+          if (map.getLayer(`ov-line-${ov.id}`)) {
+            map.setPaintProperty(`ov-line-${ov.id}`, "line-opacity", ov.opacity ?? 0.85);
+          }
+          if (map.getLayer(`ov-fill-${ov.id}`)) {
+            map.setPaintProperty(`ov-fill-${ov.id}`, "fill-opacity", (ov.opacity ?? 0.4) * 0.6);
+          }
         }
       }
-      // Remove overlays that disappeared from props.
       const style = map.getStyle();
       for (const src of Object.keys(style.sources ?? {})) {
         if (src.startsWith("ov-") && !seen.has(src)) {
-          const lid = `ov-layer-${src.slice(3)}`;
-          if (map.getLayer(lid)) map.removeLayer(lid);
+          for (const suffix of ["layer", "line", "fill"]) {
+            const lid = `${suffix === "layer" ? "ov-layer" : "ov-" + suffix}-${src.slice(3)}`;
+            if (map.getLayer(lid)) map.removeLayer(lid);
+          }
           map.removeSource(src);
         }
       }

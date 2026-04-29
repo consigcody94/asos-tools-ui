@@ -11,7 +11,14 @@ export interface OwlFilterState {
   rotationOn: boolean;
   rotationPauseSec: number;
   programs: { ASOS: boolean; AWIPS: boolean; BUOY: boolean; FACILITY: boolean; NWR: boolean; RADAR: boolean; UPPERAIR: boolean };
-  overlays: { radar: boolean; radarOpacity: number };
+  overlays: {
+    radar: boolean; radarOpacity: number;
+    wwa: boolean;
+    wfo: boolean;
+    rfc: boolean;
+    cwsu: boolean;
+    timezones: boolean;
+  };
   projection: "mercator" | "globe";
 }
 
@@ -22,7 +29,10 @@ export const DEFAULT_FILTERS: OwlFilterState = {
   rotationOn: false,
   rotationPauseSec: 5,
   programs: { ASOS: true, AWIPS: false, BUOY: false, FACILITY: false, NWR: false, RADAR: false, UPPERAIR: false },
-  overlays: { radar: false, radarOpacity: 0.6 },
+  overlays: {
+    radar: false, radarOpacity: 0.6,
+    wwa: false, wfo: false, rfc: false, cwsu: false, timezones: false,
+  },
   projection: "mercator",
 };
 
@@ -199,6 +209,11 @@ export function OwlLeftSidebar({
               <span className="w-8 text-right">{Math.round(filters.overlays.radarOpacity * 100)}%</span>
             </div>
           )}
+          <OverlayCheck label="WWA (active alerts)" k="wwa" filters={filters} patch={patch} />
+          <OverlayCheck label="WFO Footprints" k="wfo" filters={filters} patch={patch} />
+          <OverlayCheck label="RFC Boundaries" k="rfc" filters={filters} patch={patch} />
+          <OverlayCheck label="CWSU Boundaries" k="cwsu" filters={filters} patch={patch} />
+          <OverlayCheck label="Time Zones" k="timezones" filters={filters} patch={patch} />
         </div>
       </Card>
 
@@ -228,6 +243,28 @@ function CheckRow({ checked, onChange, label }: { checked: boolean; onChange: (v
   return (
     <label className="flex cursor-pointer items-center gap-2 py-0.5 text-[0.74rem]">
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="text-[color:var(--color-fg)]">{label}</span>
+    </label>
+  );
+}
+
+type OverlayKey = "wwa" | "wfo" | "rfc" | "cwsu" | "timezones";
+
+function OverlayCheck({
+  label, k, filters, patch,
+}: {
+  label: string;
+  k: OverlayKey;
+  filters: OwlFilterState;
+  patch: (p: Partial<OwlFilterState>) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-[0.74rem]">
+      <input
+        type="checkbox"
+        checked={filters.overlays[k]}
+        onChange={(e) => patch({ overlays: { ...filters.overlays, [k]: e.target.checked } })}
+      />
       <span className="text-[color:var(--color-fg)]">{label}</span>
     </label>
   );
