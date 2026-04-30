@@ -1,5 +1,10 @@
 # OWL × NWS Systems Status — Unified Single-File Apps Script
 
+> 📦 **Standalone repo**: this same code is mirrored at
+> [`consigcody94/owl-status-apps-script`](https://github.com/consigcody94/owl-status-apps-script)
+> if you want to clone just the Apps Script piece without the rest of
+> the OWL Next.js codebase.
+
 A single self-contained Google Apps Script (`Code.gs` +
 `appsscript.json`) that replaces James Glenn's multi-file System
 Outage Map project with **live API data sources, the SUAD-spec
