@@ -47,31 +47,27 @@ const OVERLAYS: Record<string, OverlayDef> = {
   wwa: {
     url: "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer/1/query",
     // Field is lowercase `expiration` in the layer schema; it's a
-    // datetime in the future for currently-active alerts.
+    // datetime in the future for currently-active alerts. We tried
+    // adding geometryPrecision + maxAllowableOffset to shrink the
+    // ~45 MB response but the upstream returns 400 on that param
+    // combo with this layer — leaving raw and relying on the
+    // resultRecordCount cap (500) for size control.
     whereClause: "expiration>CURRENT_TIMESTAMP",
     resultRecordCount: 500,
-    geometryPrecision: 2,
-    maxAllowableOffset: 0.02,
   },
   // World time zones (Esri Living Atlas) — already lightweight.
   timezones: {
     url: "https://services.arcgis.com/iQ1dY19aHwbSDYIF/ArcGIS/rest/services/World_Time_Zones/FeatureServer/0/query",
-    geometryPrecision: 1,
   },
 };
 
-// NWS API zones — different shape than ArcGIS (returns GeoJSON
-// FeatureCollection directly, no query params needed). The
-// `type` parameter on this API maps to NWS forecast zone types:
-//   forecast  → public-zone forecast areas (~700 polygons, the
-//               "WFO footprint" operators usually mean)
-//   fire      → fire-weather zones (~600 polygons, RFC-adjacent)
-//   coastal   → coastal marine zones (~500 polygons, CWSU-adjacent)
-const NWS_API_ZONES: Record<string, string> = {
-  wfo:  "https://api.weather.gov/zones?type=forecast&include_geometry=true&limit=2000",
-  rfc:  "https://api.weather.gov/zones?type=fire&include_geometry=true&limit=2000",
-  cwsu: "https://api.weather.gov/zones?type=coastal&include_geometry=true&limit=2000",
-};
+// NWS API zones — known-broken for our use case. The bulk
+// `/zones?type=...&include_geometry=true` endpoint returns
+// `geometry: null` for every feature regardless of the flag, and
+// the per-zone endpoint requires ~700 separate API calls (~30 s).
+// Until we ship a build-time snapshot under public/boundaries/
+// we leave these types unmapped so the UI clearly disables them.
+const NWS_API_ZONES: Record<string, string> = {};
 
 export async function GET(_req: Request, ctx: { params: Promise<{ type: string }> }) {
   const { type } = await ctx.params;

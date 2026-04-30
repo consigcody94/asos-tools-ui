@@ -211,13 +211,14 @@ export function OwlLeftSidebar({
           )}
           <OverlayCheck label="WWA (active alerts)" k="wwa" filters={filters} patch={patch} />
           <OverlayCheck label="Time Zones" k="timezones" filters={filters} patch={patch} />
-          {/* WFO / RFC / CWSU now sourced from api.weather.gov/zones
-              (forecast / fire / coastal types). NWS retired the older
-              ArcGIS reference-map service in early 2026; the zones API
-              has the same boundaries and is officially supported. */}
-          <OverlayCheck label="WFO Footprints (forecast zones)" k="wfo" filters={filters} patch={patch} />
-          <OverlayCheck label="RFC / Fire Zones" k="rfc" filters={filters} patch={patch} />
-          <OverlayCheck label="CWSU / Coastal Zones" k="cwsu" filters={filters} patch={patch} />
+          {/* WFO / RFC / CWSU disabled until a build-time GeoJSON
+              snapshot ships under public/boundaries/. NWS retired
+              the legacy ArcGIS reference layers in early 2026 and
+              the api.weather.gov bulk zones endpoint silently
+              returns geometry:null. */}
+          <ProgramCheck label="WFO Footprints" disabled hint="snapshot pending" />
+          <ProgramCheck label="RFC Boundaries" disabled hint="snapshot pending" />
+          <ProgramCheck label="CWSU Boundaries" disabled hint="snapshot pending" />
         </div>
       </Card>
 
