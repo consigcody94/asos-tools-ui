@@ -165,13 +165,21 @@ async function fetchAwcRecentMetars(stations: string[]): Promise<RawMetarRow[]> 
 //   - Latest OK but prior 4h had `$` or gap   → RECOVERED / INTERMITTENT
 //   - All METARs present + no flags           → CLEAN
 
-/** Minutes a station can be silent before we flip it to MISSING. Per
- *  the SUAD/ASOS team's operational definition: "missing just doesn't
- *  show for an hour" — one hourly METAR skipped is enough to mark
- *  MISSING. The 120-min threshold from the legacy Python watchlist
- *  was too lenient and hid stations that had genuinely gone silent
- *  for 90+ minutes. */
-const MISSING_SILENCE_MIN = 60;
+/** Minutes a station can be silent before we flip it to MISSING.
+ *
+ *  Per the SUAD/ASOS team's operational definition: "missing just
+ *  doesn't show for an hour." Implemented as 75 minutes — one hourly
+ *  METAR cycle (60 min) plus a 15-minute filing grace. A station that
+ *  reports at :51 and a scan at :55 next hour produces minsSinceLast
+ *  ≈ 64m; calling that MISSING would be a false positive because the
+ *  station is just between scheduled reports. 75 covers the realistic
+ *  "missed an hourly bucket" case without flagging late-filers.
+ *
+ *  Anything stricter (60m) trips on routine reporting jitter; anything
+ *  looser (120m, the legacy Python value) hides genuinely silent
+ *  stations.
+ */
+const MISSING_SILENCE_MIN = 75;
 
 /** Days of silence that escalate MISSING → OFFLINE (major issue / likely
  *  decommissioned). Python's watchlist does not model this yet; OWL UI
@@ -436,7 +444,8 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
     }
   } catch { /* optional enrichment */ }
 
-  return cat.map((s) => {
+  // First pass: classify every station from IEM data alone.
+  const firstPass: ScanRow[] = cat.map((s) => {
     const key = normStationKey(s.id);
     const ms = byStation.get(key) || [];
     const archiveEnd = archiveEndByKey.get(key) ?? null;
@@ -450,6 +459,60 @@ export async function scanNetwork(hoursBack = 4): Promise<ScanRow[]> {
       ...cls,
     };
   });
+
+  // Second pass: AWC fallback for stations IEM returned NO data on.
+  // The bug being fixed: IEM's batch endpoint sometimes silently drops
+  // a subset of station IDs from a chunk's response. Those stations
+  // get classified MISSING with null minutes_since_last_report, even
+  // when they're reporting fine and AWC / NWS have fresh METARs for
+  // them. Cross-checking AWC for the null cases catches the IEM
+  // partial-data artifact and re-classifies based on a real second
+  // source. Bounded by AWC_FALLBACK_BATCH so we don't burn the AWC
+  // budget on a freshly-restarted process where many stations are
+  // legitimately uninitialized.
+  const AWC_FALLBACK_BATCH = 100;
+  const orphans = firstPass
+    .filter((r) => r.status === "MISSING" && r.minutes_since_last_report == null)
+    .slice(0, AWC_FALLBACK_BATCH);
+  if (orphans.length > 0) {
+    try {
+      const awcMetars = await fetchAwcRecentMetars(orphans.map((r) => r.station));
+      const awcByStation = new Map<string, RawMetarRow[]>();
+      for (const m of awcMetars) {
+        const k = normStationKey(m.station);
+        const arr = awcByStation.get(k) || [];
+        arr.push(m);
+        awcByStation.set(k, arr);
+      }
+      // Re-classify orphans using AWC data. Use a Map for O(1) lookup
+      // when patching the firstPass array.
+      const patches = new Map<string, ScanRow>();
+      for (const r of orphans) {
+        const key = normStationKey(r.station);
+        const aw = awcByStation.get(key) ?? [];
+        if (aw.length === 0) continue;  // Truly silent — keep MISSING
+        const archiveEnd = archiveEndByKey.get(key) ?? null;
+        const cls = classify(aw, now, expectedBuckets, archiveEnd);
+        // Tag the probable_reason so operators see this came from AWC.
+        const reason = cls.probable_reason
+          ? `${cls.probable_reason} (via AWC fallback — IEM had no data)`
+          : "AWC fallback — IEM had no data this scan";
+        patches.set(r.station, {
+          ...r,
+          ...cls,
+          probable_reason: reason,
+        });
+      }
+      if (patches.size > 0) {
+        console.log(`[scan] AWC fallback re-classified ${patches.size}/${orphans.length} IEM-orphaned stations`);
+        return firstPass.map((r) => patches.get(r.station) ?? r);
+      }
+    } catch (err) {
+      console.warn("[scan] AWC fallback failed:", (err as Error).message);
+    }
+  }
+
+  return firstPass;
 }
 
 export function scanSummary(rows: ScanRow[]): {
