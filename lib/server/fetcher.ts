@@ -88,6 +88,16 @@ export const HOST_LIMITS: Record<string, HostLimit> = {
   "mrms.ncep.noaa.gov":             { capacity: 1,  refillPerSec: 0.5,  note: "safe: MRMS HTTP GRIB2"            },
   "mapservices.weather.noaa.gov":   { capacity: 4,  refillPerSec: 2,    note: "NWS OGC/ArcGIS map services"      },
   "madis-data.ncep.noaa.gov":       { capacity: 1,  refillPerSec: 0.5,  note: "MADIS web services"               },
+
+  // NCEI Access Services + Storm Events DB. NCEI publishes a "5 req/s
+  // per IP is a safe default" guideline; the Access endpoint is slower
+  // than IEM (~500 ms cold) so stay conservative to avoid eating into
+  // any cross-check pass budget.
+  "www.ncei.noaa.gov":              { capacity: 3,  refillPerSec: 3,    note: "doc: 5 req/s safe; OWL paces to 3 req/s" },
+  // NCEI sometimes returns links to alt-host (`ncei.noaa.gov` — no www)
+  // for archive blobs. Mirror the same limit so a redirect doesn't
+  // bypass the bucket.
+  "ncei.noaa.gov":                  { capacity: 3,  refillPerSec: 3,    note: "alt-host for NCEI; same budget"   },
 };
 
 const DEFAULT_LIMIT: HostLimit = { capacity: 1, refillPerSec: 1, note: "safe default" };

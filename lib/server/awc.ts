@@ -77,3 +77,54 @@ export async function fetchAfd(cwa: string): Promise<{ cwa: string; text: string
   if (txt.startsWith('{"status":"error"')) return null;
   return { cwa: id, text: txt };
 }
+
+// ---- G-AIRMETs (replaces CONUS text AIRMETs since Jan 2025) ---------------
+//
+// Per the AWC API spec, G-AIRMETs are the gridded successor to CONUS text
+// AIRMETs (which were discontinued in January 2025). They provide better
+// time/space precision for turbulence, icing, and IFR advisories. Alaska
+// still uses traditional text AIRMETs through the airsigmet endpoint.
+
+let _gairmetCache: { at: number; rows: Array<Record<string, unknown>> } | null = null;
+const GAIRMET_TTL_MS = 5 * 60 * 1000;
+
+export async function fetchGAirmets(): Promise<Array<Record<string, unknown>>> {
+  if (_gairmetCache && Date.now() - _gairmetCache.at < GAIRMET_TTL_MS) {
+    return _gairmetCache.rows;
+  }
+  try {
+    const data = await fetchJson<Array<Record<string, unknown>>>(`${BASE}/gairmet`, {
+      query: { format: "json" }, timeoutMs: 8_000, retries: 1,
+    });
+    const rows = Array.isArray(data) ? data : [];
+    _gairmetCache = { at: Date.now(), rows };
+    return rows;
+  } catch (err) {
+    console.warn("[awc] gairmet fetch failed:", (err as Error).message);
+    return _gairmetCache?.rows ?? [];
+  }
+}
+
+// ---- Center Weather Advisories --------------------------------------------
+// Regional aviation advisories issued by Center Weather Service Units
+// (CWSUs) for ARTCCs. Lighter-weight than SIGMETs; fast to fetch.
+
+let _cwaCache: { at: number; rows: Array<Record<string, unknown>> } | null = null;
+const CWA_TTL_MS = 5 * 60 * 1000;
+
+export async function fetchCwa(): Promise<Array<Record<string, unknown>>> {
+  if (_cwaCache && Date.now() - _cwaCache.at < CWA_TTL_MS) {
+    return _cwaCache.rows;
+  }
+  try {
+    const data = await fetchJson<Array<Record<string, unknown>>>(`${BASE}/cwa`, {
+      query: { format: "json" }, timeoutMs: 8_000, retries: 1,
+    });
+    const rows = Array.isArray(data) ? data : [];
+    _cwaCache = { at: Date.now(), rows };
+    return rows;
+  } catch (err) {
+    console.warn("[awc] cwa fetch failed:", (err as Error).message);
+    return _cwaCache?.rows ?? [];
+  }
+}

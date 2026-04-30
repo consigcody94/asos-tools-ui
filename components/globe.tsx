@@ -1,11 +1,24 @@
 "use client";
 
-/** Flat-map command surface (was a 3D globe).
+/** Flat-map / 3D-globe command surface.
  *
  *  Operators monitor CONUS + Alaska + Hawaii + the Caribbean — all of
- *  which need to be visible simultaneously. A spinning globe hides
- *  half the network at any time, so we render a 2D Web Mercator map
- *  using MapLibre GL with CartoDB Dark Matter raster tiles.
+ *  which need to be visible simultaneously. The default 2D Web Mercator
+ *  map keeps the whole network in view; the 3D globe option (MapLibre
+ *  v5 native projection) gives a Google-Earth-style horizon-aware
+ *  perspective when an operator wants the natural-Earth context.
+ *
+ *  Basemaps are pluggable: a typed BASEMAPS registry exposes Operations
+ *  (CartoDB Dark Matter — high-contrast for status-grid overlays),
+ *  Satellite (Esri World Imagery — Google-Earth-class mosaic), Blue
+ *  Marble (NASA GIBS — true photographic Earth), and Terrain
+ *  (OpenTopoMap — relief shading). Switching the basemap removes and
+ *  re-adds just the basemap source/layer so overlays, zoom, and pan
+ *  state are preserved.
+ *
+ *  When projection === "globe" we additionally call `setSky()` to add
+ *  a horizon-aware atmosphere — gives the globe a believable rim glow
+ *  and altitude fog instead of MapLibre's default flat black void.
  *
  *  The exported `Globe` name and Props are preserved so callers
  *  (summary-client.tsx) don't have to change. `paths` and `autoRotate`
@@ -16,6 +29,94 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+// ---- Basemap registry ------------------------------------------------------
+//
+// Every basemap is a raster XYZ tile source. We keep this registry typed and
+// at module-scope so the sidebar UI can iterate it for chip buttons without
+// duplicating URLs. `attribution` is required by every public source we use
+// here; passing it through MapLibre's source config keeps us compliant with
+// each provider's terms-of-use without operators having to know the rules.
+
+export type BasemapId = "operations" | "satellite" | "bluemarble" | "terrain";
+
+interface BasemapDef {
+  /** Short label shown in UI chips. */
+  label: string;
+  /** XYZ tile URLs. Multiple = round-robin across CDN shards. */
+  tiles: string[];
+  /** Tile pixel size — 256 for everything we use today. */
+  tileSize: number;
+  /** Required attribution string per provider terms. */
+  attribution: string;
+  /** Hard zoom cap. Some sources (NASA GIBS BlueMarble) only ship up
+   *  to z=8; pretending higher would 404 every tile. MapLibre handles
+   *  the missing-tile case gracefully when maxzoom is set. */
+  maxzoom: number;
+}
+
+export const BASEMAPS: Record<BasemapId, BasemapDef> = {
+  // CartoDB Dark Matter — the current ops aesthetic. Highest contrast
+  // against ASOS status dots; intentionally devoid of imagery so the
+  // overlay layer carries the visual signal.
+  operations: {
+    label: "Operations",
+    tiles: [
+      "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+      "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+      "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+      "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+    ],
+    tileSize: 256,
+    attribution:
+      '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+    maxzoom: 19,
+  },
+  // Esri World Imagery — the Google-Earth-style global mosaic. Free
+  // for non-commercial / operational use with attribution. This is
+  // what most "satellite view" toggles are showing in the wild.
+  // Note the tile axis order is /{z}/{y}/{x} — Esri convention, not
+  // OSM convention.
+  satellite: {
+    label: "Satellite",
+    tiles: [
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    ],
+    tileSize: 256,
+    attribution:
+      'Imagery © <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics, and the GIS User Community',
+    maxzoom: 19,
+  },
+  // NASA GIBS BlueMarble Next Generation — true photographic Earth
+  // composite. Static date (2004-08-01) is the canonical month most
+  // "Blue Marble" embeds use. Caps out at z=8 — beyond that, GIBS
+  // returns 404 and MapLibre paints the parent tile, which is fine.
+  bluemarble: {
+    label: "Blue Marble",
+    tiles: [
+      "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_NextGeneration/default/2004-08-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg",
+    ],
+    tileSize: 256,
+    attribution: 'Imagery NASA GIBS / EOSDIS',
+    maxzoom: 8,
+  },
+  // OpenTopoMap — relief-shaded terrain. The closest free analog to
+  // Google Earth's terrain mode. SRTM-derived hillshade plus OSM
+  // labels; less data-dense than satellite but easier on the eyes
+  // for inland-station forensic work.
+  terrain: {
+    label: "Terrain",
+    tiles: [
+      "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+      "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+      "https://c.tile.opentopomap.org/{z}/{x}/{y}.png",
+    ],
+    tileSize: 256,
+    attribution:
+      'Map data: © <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+    maxzoom: 17,
+  },
+};
 
 export interface GlobePoint {
   lat: number;
@@ -71,6 +172,9 @@ interface Props {
   /** "mercator" (flat 2D) or "globe" (3D orthographic). MapLibre v5+ has
    *  native globe projection — no component swap, just a runtime toggle. */
   projection?: "mercator" | "globe";
+  /** Which basemap raster source to render. Hot-swappable without
+   *  remount. See BASEMAPS registry above for choices. */
+  basemap?: BasemapId;
 }
 
 function escapeHtml(s: string): string {
@@ -93,6 +197,7 @@ export function Globe({
   onPointClick,
   overlays = [],
   projection = "mercator",
+  basemap = "operations",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -106,6 +211,7 @@ export function Globe({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
+    const initial = BASEMAPS[basemap] ?? BASEMAPS.operations;
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: {
@@ -113,15 +219,10 @@ export function Globe({
         sources: {
           basemap: {
             type: "raster",
-            tiles: [
-              "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-              "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-              "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-              "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-            ],
-            tileSize: 256,
-            attribution:
-              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+            tiles: initial.tiles,
+            tileSize: initial.tileSize,
+            maxzoom: initial.maxzoom,
+            attribution: initial.attribution,
           },
         },
         layers: [{ id: "basemap", type: "raster", source: "basemap" }],
@@ -232,7 +333,10 @@ export function Globe({
     });
   }, [focus]);
 
-  // Switch projection (mercator <-> globe) without re-mounting.
+  // Switch projection (mercator <-> globe) without re-mounting. When
+  // switching to globe, also paint a horizon-aware atmosphere via
+  // setSky() — gives the sphere a believable rim glow instead of the
+  // default flat-black void around the orthographic projection.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -241,13 +345,66 @@ export function Globe({
         // setProjection is a v5+ API; old MapLibre ignores it.
         (map as unknown as { setProjection?: (p: { type: string }) => void })
           .setProjection?.({ type: projection });
+        // setSky is also v5+. Configures atmosphere only on globe;
+        // mercator gets a flat dark sky to keep contrast with overlays.
+        const sky = projection === "globe"
+          ? {
+              "sky-color": "#0b1326",
+              "horizon-color": "#1f3458",
+              "fog-color": "#0b1220",
+              "fog-ground-blend": 0.4,
+              "horizon-fog-blend": 0.5,
+              "sky-horizon-blend": 0.65,
+              "atmosphere-blend": [
+                "interpolate", ["linear"], ["zoom"],
+                0, 1, 5, 0.5, 7, 0,
+              ] as unknown as number,
+            }
+          : { "sky-color": "#0b1220", "fog-color": "#0b1220" };
+        (map as unknown as { setSky?: (s: Record<string, unknown>) => void })
+          .setSky?.(sky);
       } catch (err) {
-        console.warn("[map] setProjection failed:", (err as Error).message);
+        console.warn("[map] setProjection/setSky failed:", (err as Error).message);
       }
     };
     if (map.isStyleLoaded()) apply();
     else map.once("load", apply);
   }, [projection]);
+
+  // Hot-swap the basemap source when `basemap` prop changes. We remove
+  // and re-add only the basemap source/layer — overlays, points, zoom,
+  // and pan state are preserved (~40 ms vs ~600 ms full remount).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const def = BASEMAPS[basemap] ?? BASEMAPS.operations;
+    const apply = () => {
+      try {
+        if (map.getLayer("basemap")) map.removeLayer("basemap");
+        if (map.getSource("basemap")) map.removeSource("basemap");
+        map.addSource("basemap", {
+          type: "raster",
+          tiles: def.tiles,
+          tileSize: def.tileSize,
+          maxzoom: def.maxzoom,
+          attribution: def.attribution,
+        });
+        // Insert basemap UNDER all other layers so overlays + points
+        // continue to render on top.
+        const firstNonBase = map.getStyle().layers?.find(
+          (l) => l.id !== "basemap"
+        )?.id;
+        map.addLayer(
+          { id: "basemap", type: "raster", source: "basemap" },
+          firstNonBase,
+        );
+      } catch (err) {
+        console.warn("[map] basemap swap failed:", (err as Error).message);
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [basemap]);
 
   // Sync raster + geojson overlays. Each overlay renders below the
   // points layer. Layer naming: ov-line-* for boundaries, ov-fill-*

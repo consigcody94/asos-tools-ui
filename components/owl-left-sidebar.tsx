@@ -20,6 +20,9 @@ export interface OwlFilterState {
     timezones: boolean;
   };
   projection: "mercator" | "globe";
+  /** Photoreal basemap selector. See BASEMAPS in components/globe.tsx
+   *  for the full list. */
+  basemap: "operations" | "satellite" | "bluemarble" | "terrain";
 }
 
 export const DEFAULT_FILTERS: OwlFilterState = {
@@ -34,6 +37,7 @@ export const DEFAULT_FILTERS: OwlFilterState = {
     wwa: false, wfo: false, rfc: false, cwsu: false, timezones: false,
   },
   projection: "mercator",
+  basemap: "operations",
 };
 
 export const REGIONS = [
@@ -137,6 +141,29 @@ export function OwlLeftSidebar({
             className={`noc-btn flex-1 px-2 py-1 text-[0.66rem] ${filters.projection === "globe" ? "noc-btn-primary" : ""}`}
             title="3D orthographic globe (natural Earth)"
           >3D Globe</button>
+        </div>
+        <div className="mt-2 text-[0.62rem] uppercase tracking-wider text-[color:var(--color-fg-muted)]">Basemap</div>
+        <div className="mt-1 grid grid-cols-2 gap-1">
+          <button
+            onClick={() => patch({ basemap: "operations" })}
+            className={`noc-btn px-2 py-1 text-[0.62rem] ${filters.basemap === "operations" ? "noc-btn-primary" : ""}`}
+            title="Dark cartography — high contrast for status overlays"
+          >Operations</button>
+          <button
+            onClick={() => patch({ basemap: "satellite" })}
+            className={`noc-btn px-2 py-1 text-[0.62rem] ${filters.basemap === "satellite" ? "noc-btn-primary" : ""}`}
+            title="Esri World Imagery — Google-Earth-class satellite mosaic"
+          >Satellite</button>
+          <button
+            onClick={() => patch({ basemap: "bluemarble" })}
+            className={`noc-btn px-2 py-1 text-[0.62rem] ${filters.basemap === "bluemarble" ? "noc-btn-primary" : ""}`}
+            title="NASA Blue Marble Next Generation — true photographic Earth"
+          >Blue Marble</button>
+          <button
+            onClick={() => patch({ basemap: "terrain" })}
+            className={`noc-btn px-2 py-1 text-[0.62rem] ${filters.basemap === "terrain" ? "noc-btn-primary" : ""}`}
+            title="OpenTopoMap — relief-shaded terrain with OSM labels"
+          >Terrain</button>
         </div>
       </Card>
 

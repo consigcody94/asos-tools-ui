@@ -646,6 +646,7 @@ export function SummaryClient({
             paths={[]}
             overlays={mapOverlays}
             projection={filters.projection}
+            basemap={filters.basemap}
             height={720}
             className="h-[calc(100dvh-200px)] min-h-[560px] sm:h-[72vh] sm:min-h-[620px]"
             focus={focus}

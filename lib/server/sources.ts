@@ -42,11 +42,11 @@ export const SOURCES: Source[] = [
   {
     name: "NOAA NCEI Access Services",
     url: "https://www.ncei.noaa.gov/access/services/data/v1",
-    used_for: "Fallback when IEM is unavailable",
-    auth: "none", cadence: "hourly", trust: "agency",
-    rate_limit: "5 req/s (safe default)",
-    notes: "Authoritative NCEI archive. Slower than IEM. (Documented fallback — not yet wired into the scan path.)",
-    wired: "fallback",
+    used_for: "Authoritative cross-validation of IEM scan classifications",
+    auth: "none", cadence: "hourly archive", trust: "agency",
+    rate_limit: "≤5 req/s (doc); OWL paces to 3 req/s",
+    notes: "Cross-check pass validates 30 disputed stations per scan-cycle. Maintenance-aware: respects NCEI_MAINT_START / NCEI_MAINT_END env vars.",
+    wired: "live",
   },
   {
     name: "NOAA NCEI Climate Data Online",

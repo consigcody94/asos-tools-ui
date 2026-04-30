@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { scanNetwork, scanSummary } from "./iem";
 import { observeMs, setGauge } from "./metrics";
+import { crossCheckStation, isInNceiMaintenanceWindow } from "./ncei";
 import { redisGet, redisSet } from "./redis-cache";
 import type { ScanRow, StationStatus } from "./types";
 
@@ -117,6 +118,75 @@ async function runScan(): Promise<ScanState> {
   return state;
 }
 
+// ---- NCEI cross-check pass -------------------------------------------------
+//
+// Why a separate pass and not inside runScan: NCEI is slow (≈500 ms / call)
+// and rate-limited to 3 req/s in our fetcher.ts. Validating all ~370
+// disputed stations every scan would burn the entire NCEI budget on a
+// single tick. Instead we rotate ~30 disputed stations per scan, oldest-
+// checked first, so every disputed classification gets a second opinion
+// within ~12 cycles (≈1 hour at 5-min scan cadence).
+
+/** Per-station last-cross-checked timestamp (ms). Used to pick oldest
+ *  unchecked disputed stations for the next pass. */
+const _crossCheckedAt: Map<string, number> = new Map();
+const CROSS_CHECK_BATCH = 30;
+/** A "disputed" status is one that NCEI cross-validation could overturn.
+ *  CLEAN is excluded because there's nothing for NCEI to dispute — if
+ *  IEM saw all the data, NCEI seeing the same data adds no signal. */
+const DISPUTED_STATUSES: ReadonlySet<StationStatus> = new Set([
+  "INTERMITTENT", "MISSING", "FLAGGED",
+]);
+
+async function runCrossCheckPass(): Promise<void> {
+  // Skip entirely if NCEI is in maintenance — env-configurable window.
+  if (isInNceiMaintenanceWindow()) {
+    console.log("[xcheck] skipped: NCEI maintenance window active");
+    return;
+  }
+  // Pick disputed stations, oldest-checked first.
+  const candidates: ScanRow[] = [];
+  for (const row of _lastKnown.values()) {
+    if (!DISPUTED_STATUSES.has(row.status)) continue;
+    if (!row.station) continue;
+    candidates.push(row);
+  }
+  candidates.sort((a, b) => {
+    const at = _crossCheckedAt.get(a.station) ?? 0;
+    const bt = _crossCheckedAt.get(b.station) ?? 0;
+    return at - bt;  // oldest first
+  });
+  const batch = candidates.slice(0, CROSS_CHECK_BATCH);
+  if (batch.length === 0) return;
+
+  const t0 = Date.now();
+  // Run in parallel; the per-host token bucket in fetcher.ts paces them.
+  await Promise.all(batch.map(async (row) => {
+    try {
+      const result = await crossCheckStation(row);
+      const updated: ScanRow = { ..._lastKnown.get(row.station)!, cross_check: result };
+      _lastKnown.set(row.station, updated);
+      _crossCheckedAt.set(row.station, Date.now());
+    } catch (err) {
+      console.warn(`[xcheck] ${row.station} failed:`, (err as Error).message);
+    }
+  }));
+  const duration = Date.now() - t0;
+  console.log(`[xcheck] validated ${batch.length} stations in ${duration} ms`);
+
+  // Re-persist the merged buffer so cross_check fields survive restarts.
+  if (_cache) {
+    const refreshed: ScanState = {
+      ..._cache,
+      rows: Array.from(_lastKnown.values()),
+    };
+    _cache = refreshed;
+    const serialized = JSON.stringify(refreshed);
+    redisSet(REDIS_KEY, serialized, REDIS_TTL).catch(() => undefined);
+    try { writeFileSync(DISK_PATH, serialized); } catch { /* non-fatal */ }
+  }
+}
+
 async function doRestore(): Promise<void> {
   // Try Redis first (faster, single-digit ms). Fall through to disk
   // only if Redis returns nothing — operators occasionally wipe
@@ -173,6 +243,10 @@ function kickBackgroundRefresh(): void {
       // Discard if a flush bumped the generation mid-flight.
       if (myGeneration !== _generation) return _cache ?? s;
       _cache = s;
+      // Fire-and-forget the NCEI cross-check pass. Validates 30
+      // disputed stations / scan; full coverage in ~1 hour.
+      runCrossCheckPass().catch((e) =>
+        console.warn("[xcheck] pass failed:", (e as Error).message));
       return s;
     })
     .catch((e) => {
