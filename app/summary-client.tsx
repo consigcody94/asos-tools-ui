@@ -636,21 +636,120 @@ export function SummaryClient({
   }, [filters.overlays]);
 
   function focusStation(stationId: string) {
-    const s = STATIONS.find((x) => x.id === stationId);
-    if (!s) return;
-    setFocus({ lat: s.lat, lng: s.lon, alt: 0.7 });
-    const scan = scanByStation[stationId];
+    // Route by program. Right-sidebar Down-Sites table emits the bare
+    // station ID for any of ASOS / RADAR / BUOY / NWR / UPPERAIR; we
+    // need to find the matching row + lat/lon for non-ASOS programs
+    // because they aren't in the AOMC catalog.
+
+    // ASOS path — STATIONS catalog has it.
+    const asos = STATIONS.find((x) => x.id === stationId);
+    if (asos) {
+      setFocus({ lat: asos.lat, lng: asos.lon, alt: 0.7 });
+      const scan = scanByStation[stationId];
+      setStation({
+        id: stationId,
+        lat: asos.lat,
+        lng: asos.lon,
+        name: asos.name,
+        state: asos.state,
+        status: scan?.status,
+        minutesSinceLast: scan?.minutes_since_last_report,
+        lastMetar: scan?.last_metar,
+        lastValid: scan?.last_valid,
+        probableReason: scan?.probable_reason,
+        evidenceQuality: scan?.evidence_quality ?? null,
+        stateLog: scan?.state_log ?? null,
+        crossCheck: scan?.cross_check ?? null,
+        kind: "asos",
+      });
+      return;
+    }
+
+    // NEXRAD path — nexradRows has lat/lon for every WSR-88D site.
+    const radar = nexradRows.find((r) => r.station === stationId);
+    if (radar) {
+      const lat = (radar as { lat?: number }).lat;
+      const lng = (radar as { lon?: number }).lon;
+      if (lat != null && lng != null) setFocus({ lat, lng, alt: 0.7 });
+      setStation({
+        id: stationId,
+        lat: lat ?? 0,
+        lng: lng ?? 0,
+        name: radar.name ?? `${stationId} NEXRAD`,
+        state: radar.state,
+        status: radar.status,
+        probableReason: radar.reason ?? null,
+        kind: "radar",
+      });
+      return;
+    }
+
+    // NDBC buoy path — buoyRows.
+    const buoy = buoyRows.find((r) => r.station === stationId);
+    if (buoy) {
+      const lat = (buoy as { lat?: number }).lat;
+      const lng = (buoy as { lon?: number }).lon;
+      if (lat != null && lng != null) setFocus({ lat, lng, alt: 0.7 });
+      setStation({
+        id: stationId,
+        lat: lat ?? 0,
+        lng: lng ?? 0,
+        name: `Buoy ${stationId}`,
+        status: buoy.status,
+        minutesSinceLast: (buoy as { minutes_since?: number }).minutes_since,
+        lastValid: (buoy as { since?: string }).since ?? null,
+        kind: "buoy",
+      });
+      return;
+    }
+
+    // NWR path — nwrRows. NWR stations broadcast over a fixed VHF
+    // frequency; the drill panel surfaces nearby hazards by lat/lon.
+    const nwr = nwrRows.find((r) => r.station === stationId);
+    if (nwr) {
+      const lat = (nwr as { lat?: number }).lat;
+      const lng = (nwr as { lon?: number }).lon;
+      if (lat != null && lng != null) setFocus({ lat, lng, alt: 0.7 });
+      setStation({
+        id: stationId,
+        lat: lat ?? 0,
+        lng: lng ?? 0,
+        name: nwr.name ?? `NWR ${stationId}`,
+        state: nwr.state,
+        status: nwr.status,
+        probableReason: nwr.reason ?? null,
+        kind: "event",   // closest to "non-METAR site with hazards"
+      });
+      return;
+    }
+
+    // Upper-Air path — uaRows.
+    const ua = uaRows.find((r) => r.station === stationId);
+    if (ua) {
+      const lat = (ua as { lat?: number }).lat;
+      const lng = (ua as { lon?: number }).lon;
+      if (lat != null && lng != null) setFocus({ lat, lng, alt: 0.7 });
+      setStation({
+        id: stationId,
+        lat: lat ?? 0,
+        lng: lng ?? 0,
+        name: ua.name ?? `Upper-Air ${stationId}`,
+        state: ua.state,
+        status: ua.status,
+        probableReason: ua.reason ?? null,
+        kind: "event",
+      });
+      return;
+    }
+
+    // Final fallback: open the drill with whatever we have so the user
+    // sees an actual response instead of a silent no-op.
     setStation({
       id: stationId,
-      lat: s.lat,
-      lng: s.lon,
-      name: s.name,
-      state: s.state,
-      status: scan?.status,
-      minutesSinceLast: scan?.minutes_since_last_report,
-      lastMetar: scan?.last_metar,
-      lastValid: scan?.last_valid,
-      probableReason: scan?.probable_reason,
+      lat: 0,
+      lng: 0,
+      name: stationId,
+      kind: "event",
     });
   }
 
