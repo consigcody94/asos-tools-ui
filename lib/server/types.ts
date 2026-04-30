@@ -70,6 +70,12 @@ export interface EvidenceQuality {
   /** Total METARs received in the window. Lets the UI show
    *  "5 reports / 4 buckets" — flags special-obs frequency too. */
   reports_seen: number;
+  /** Consecutive hourly buckets at the END of the window with no
+   *  METAR. Counts the run of silence right before "now," so the UI
+   *  can render "silent 3 buckets running" instead of just "3 hours
+   *  missing in window." Driven from the same expectedBuckets vs
+   *  covered set used to compute buckets_seen, but right-anchored. */
+  consecutive_silent_buckets?: number;
 }
 
 /** Outcome of a second-source validation against NCEI's authoritative

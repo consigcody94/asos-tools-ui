@@ -6,7 +6,11 @@
  *  serial execution, and long host cooldown when IEM asks us to slow down.
  */
 
-import { hasMaintenanceFlag, parseMetarTime } from "./metar";
+import {
+  decodeReasonsShort,
+  hasMaintenanceFlag,
+  parseMetarTime,
+} from "./metar";
 import type { ScanRow, StationStatus } from "./types";
 import { aomcStations } from "./stations";
 import { applyHostCooldown, fetchJson, fetchText } from "./fetcher";
@@ -161,9 +165,13 @@ async function fetchAwcRecentMetars(stations: string[]): Promise<RawMetarRow[]> 
 //   - Latest OK but prior 4h had `$` or gap   → RECOVERED / INTERMITTENT
 //   - All METARs present + no flags           → CLEAN
 
-/** Minutes a station can be silent before we flip it from "gap but okay"
- *  (INTERMITTENT) to MISSING. Mirrors the Python watchlist constant. */
-const MISSING_SILENCE_MIN = 120;
+/** Minutes a station can be silent before we flip it to MISSING. Per
+ *  the SUAD/ASOS team's operational definition: "missing just doesn't
+ *  show for an hour" — one hourly METAR skipped is enough to mark
+ *  MISSING. The 120-min threshold from the legacy Python watchlist
+ *  was too lenient and hid stations that had genuinely gone silent
+ *  for 90+ minutes. */
+const MISSING_SILENCE_MIN = 60;
 
 /** Days of silence that escalate MISSING → OFFLINE (major issue / likely
  *  decommissioned). Python's watchlist does not model this yet; OWL UI
@@ -268,6 +276,17 @@ function classify(
   let missingBucketCount = 0;
   for (const b of expectedBuckets) if (!covered.has(b)) missingBucketCount++;
 
+  // Right-anchored silent-bucket run: count buckets at the end of the
+  // window (newest-first) that are NOT covered. This is what an operator
+  // means by "this station has been silent for N hours running."
+  // Buckets are stored as ms-since-epoch keys; sort and walk backwards.
+  const sortedExpected = [...expectedBuckets].sort((a, b) => b - a);
+  let consecutiveSilent = 0;
+  for (const b of sortedExpected) {
+    if (covered.has(b)) break;
+    consecutiveSilent++;
+  }
+
   // Build the evidence_quality readout once — the four return paths
   // below all stamp it. Surfacing this lets the UI render badges like
   // "INTERMITTENT (2/4 buckets)" so operators see the underlying
@@ -278,6 +297,7 @@ function classify(
     fraction: expectedBuckets.size > 0 ? covered.size / expectedBuckets.size : 0,
     flagged_in_window: flaggedInWindow,
     reports_seen: rows.length,
+    consecutive_silent_buckets: consecutiveSilent,
   };
 
   // Priority ladder — mirrors Python watchlist.build_watchlist():
@@ -289,22 +309,34 @@ function classify(
   //   6. else                   → INTERMITTENT
 
   if (minsSinceLast === null || minsSinceLast >= MISSING_SILENCE_MIN) {
+    // Build a precise human-readable silence duration. "Silent 2 h 15 m
+    // (last seen 2026-04-30T03:51:00Z)" reads better than "silent 135m"
+    // and is what operators actually need at a glance.
+    const lastSeen = latest?.valid ? `; last seen ${latest.valid}Z` : "";
+    const dur = formatSilence(minsSinceLast);
     return {
       status: "MISSING",
       minutes_since_last_report: minsSinceLast,
-      last_metar: latest.metar,
-      last_valid: latest.valid,
-      probable_reason: `silent ${minsSinceLast ?? "?"}m (≥ ${MISSING_SILENCE_MIN}m threshold)`,
+      last_metar: latest?.metar ?? null,
+      last_valid: latest?.valid ?? null,
+      probable_reason: `silent ${dur} (≥ ${MISSING_SILENCE_MIN}m threshold)${lastSeen}`,
       evidence_quality: evidence,
     };
   }
   if (latestFlagged) {
+    // Decode the specific sensor reasons. PWINO / FZRANO / RVRNO etc.
+    // are far more actionable than a generic "$" — operators can route
+    // tickets directly to the right maintainer.
+    const reasons = decodeReasonsShort(latest.metar);
+    const reasonText = reasons.length > 0
+      ? reasons
+      : "internal-check (no specific NO-code)";
     return {
       status: "FLAGGED",
       minutes_since_last_report: minsSinceLast,
       last_metar: latest.metar,
       last_valid: latest.valid,
-      probable_reason: "maintenance-check indicator ($) set on latest METAR",
+      probable_reason: `$-flag set: ${reasonText}`,
       evidence_quality: evidence,
     };
   }
@@ -430,4 +462,20 @@ export function scanSummary(rows: ScanRow[]): {
   };
   for (const r of rows) counts[r.status] = (counts[r.status] || 0) + 1;
   return { counts, total: rows.length };
+}
+
+/** Render minutes-of-silence as a compact human duration.
+ *  - <60 min   → "45m"
+ *  - 60–1440   → "2h 15m"
+ *  - >1440     → "2d 3h"
+ *  Returns "?" when input is null/undefined. Used in MISSING
+ *  probable_reason text where "silent 2h 15m" reads better than
+ *  "silent 135m." */
+function formatSilence(min: number | null | undefined): string {
+  if (min == null) return "?";
+  if (min < 60) return `${min}m`;
+  if (min < 1440) return `${Math.floor(min / 60)}h ${min % 60}m`;
+  const d = Math.floor(min / 1440);
+  const h = Math.floor((min % 1440) / 60);
+  return `${d}d ${h}h`;
 }
