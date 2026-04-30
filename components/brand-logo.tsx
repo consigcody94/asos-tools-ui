@@ -5,24 +5,30 @@
  *  The video carries both the mark and the name, so we render the video
  *  as the entire brand element. Behavior:
  *
- *    - Autoplay, muted, looping, playsinline. Audio is stripped during
- *      asset processing (logos shouldn't make sound), but `muted` is
- *      ALSO required on the element for autoplay to be allowed by
- *      modern browsers (Chrome 66+, Safari 11+).
+ *    - Plays ONCE on page load and freezes on the final frame.
+ *      No looping — operators see the intro animation when they load
+ *      the app, then the static end-state for the rest of the session.
  *
- *    - Two source tags: WebM (VP9, smaller) preferred, MP4 (H.264)
- *      fallback. Saves ~150 KB on most modern browsers.
+ *    - Autoplay, muted, playsinline. Audio is stripped during asset
+ *      processing (logos shouldn't make sound), but `muted` is also
+ *      required on the element for autoplay to be allowed by modern
+ *      browsers (Chrome 66+, Safari 11+).
  *
- *    - `<img>` poster fallback for users with reduced-motion, very old
- *      browsers, or no JS. Same dimensions as the video so layout
- *      doesn't shift between fallback and video-load.
+ *    - WebM source has VP9 alpha so the black-square background of the
+ *      raw video is replaced by true transparency on Chrome / Firefox /
+ *      Edge. The MP4 fallback (Safari / older WebKit) keeps its black
+ *      bg, which we hide on dark surfaces via `mix-blend-mode: lighten`
+ *      — black + dark = dark, so the bg becomes visually invisible.
  *
- *    - Honors `prefers-reduced-motion` — when a user has that
- *      accessibility setting on, we render the static poster instead
- *      of the looping animation.
+ *    - <img> poster fallback (PNG with transparency) for users with
+ *      reduced-motion, very old browsers, or no JS. Same dimensions
+ *      as the video so layout never shifts.
  *
- *    - Width is configurable via `size` (px). Default 80px wide;
- *      sidebar uses ~120px, page headers use ~200px.
+ *    - Honors `prefers-reduced-motion` — those users see the static
+ *      poster, no animation.
+ *
+ *    - Width is configurable via `size` (px). Default 80; sidebar
+ *      uses ~180; page headers use ~240.
  */
 
 import { useEffect, useState } from "react";
@@ -67,12 +73,12 @@ export function BrandLogo({
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={size <= 240 ? "/brand/logo-poster-sm.jpg" : "/brand/logo-poster.jpg"}
+        src={size <= 240 ? "/brand/logo-poster-sm.png" : "/brand/logo-poster.png"}
         alt={alt}
         width={size}
         height={height}
         className={className}
-        style={{ display: "block", borderRadius: 6, objectFit: "cover" }}
+        style={{ display: "block", objectFit: "contain" }}
       />
     );
   }
@@ -82,14 +88,22 @@ export function BrandLogo({
       width={size}
       height={height}
       autoPlay
-      loop
       muted
       playsInline
-      preload="metadata"
-      poster="/brand/logo-poster.jpg"
+      preload="auto"
+      poster="/brand/logo-poster.png"
       aria-label={alt}
       className={className}
-      style={{ display: "block", borderRadius: 6, objectFit: "cover" }}
+      style={{
+        display: "block",
+        objectFit: "contain",
+        // Safari / older WebKit fall back to MP4 which keeps a black
+        // background; mix-blend-mode: lighten makes that black drop
+        // out visually against the dark sidebar surface. Chromium/
+        // Firefox use the WebM with true VP9 alpha so the blend mode
+        // is a visual no-op for them — same end result everywhere.
+        mixBlendMode: "lighten",
+      }}
     >
       <source src="/brand/logo.webm" type="video/webm" />
       <source src="/brand/logo.mp4" type="video/mp4" />
