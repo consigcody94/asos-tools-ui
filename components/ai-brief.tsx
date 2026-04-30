@@ -13,12 +13,17 @@ export function AiBrief() {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [text, setText] = useState("");
+  // Reasoning chain-of-thought from GLM-5.1, streamed before the
+  // visible answer starts. Rendered dimmed so the operator sees
+  // SOMETHING is happening during the ~20 s "thinking" phase.
+  const [thinking, setThinking] = useState("");
   const [duration, setDuration] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   async function generate() {
     setLoading(true);
     setText("");
+    setThinking("");
     setErr(null);
     const t0 = performance.now();
     try {
@@ -39,6 +44,7 @@ export function AiBrief() {
       const decoder = new TextDecoder();
       let buffer = "";
       let acc = "";
+      let thinkAcc = "";
       let lastEvent = "delta";
       // Read SSE chunks. Each event is a `event: NAME\ndata: JSON\n\n`
       // block. We split on the double-newline separator, keep the
@@ -64,6 +70,12 @@ export function AiBrief() {
             if (evtName === "delta" && typeof obj.text === "string") {
               acc += obj.text;
               setText(acc);
+            } else if (evtName === "thinking" && typeof obj.text === "string") {
+              // GLM-5.1 reasoning chain — keep last ~600 chars so
+              // the user sees a live ticker without an unbounded
+              // scroll-buster.
+              thinkAcc = (thinkAcc + obj.text).slice(-600);
+              setThinking(thinkAcc);
             } else if (evtName === "done") {
               const dt = obj.duration_ms ?? Math.round(performance.now() - t0);
               setDuration(dt);
@@ -127,14 +139,28 @@ export function AiBrief() {
               </button>
             </div>
 
-            {/* Pre-stream skeleton: shows ONLY when loading and no
-                tokens have arrived yet (typically the first 1-3 s). */}
-            {loading && !text && (
+            {/* Pre-stream skeleton: ONLY visible if neither thinking
+                nor real text has started arriving (the first 1-3 s). */}
+            {loading && !text && !thinking && (
               <div className="py-8 text-center">
                 <div className="noc-light noc-light-warn inline-block" />
                 <span className="noc-label text-noc-warn">
-                  Generating brief from live scan + hazards...
+                  Connecting to GLM-5.1...
                 </span>
+              </div>
+            )}
+
+            {/* GLM-5.1 reasoning ticker: shown only while we're still
+                in the thinking phase (no real content yet). Dimmed to
+                signal "this is the model working, not the answer". */}
+            {loading && !text && thinking && (
+              <div className="bg-noc-deep/50 border border-noc-border/50 p-3 mb-3">
+                <div className="noc-label text-[0.6rem] mb-1 text-noc-amber">
+                  thinking…
+                </div>
+                <div className="font-mono text-[0.7rem] leading-relaxed text-noc-dim whitespace-pre-wrap max-h-32 overflow-hidden">
+                  {thinking}
+                </div>
               </div>
             )}
 

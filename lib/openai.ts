@@ -79,6 +79,14 @@ export async function* chatStream(
     }
     // OpenAI-compatible SSE: each "event" is a `data: {...}\n\n` line.
     // The terminating sentinel is `data: [DONE]`.
+    //
+    // GLM-5.1 (and other reasoning models on Ollama Cloud) emit two
+    // delta channels: `content` (the visible answer) and `reasoning`
+    // (internal chain-of-thought). The reasoning fires first, often
+    // for 20+ seconds before any content appears. To keep the
+    // operator's UI from looking dead during that window, we prefix
+    // reasoning chunks with a sentinel `__OWL_THINKING__` so the
+    // client can render them dimly while waiting on real content.
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -86,7 +94,6 @@ export async function* chatStream(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      // Split on the SSE event separator (\n\n).
       const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
       for (const evt of events) {
@@ -96,10 +103,13 @@ export async function* chatStream(
         if (payload === "[DONE]") return;
         try {
           const obj = JSON.parse(payload) as {
-            choices?: Array<{ delta?: { content?: string } }>;
+            choices?: Array<{
+              delta?: { content?: string; reasoning?: string };
+            }>;
           };
-          const delta = obj.choices?.[0]?.delta?.content;
-          if (delta) yield delta;
+          const delta = obj.choices?.[0]?.delta;
+          if (delta?.content) yield delta.content;
+          else if (delta?.reasoning) yield `__OWL_THINKING__${delta.reasoning}`;
         } catch {
           /* malformed chunk — skip */
         }

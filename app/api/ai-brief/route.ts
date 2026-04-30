@@ -135,8 +135,15 @@ export async function POST(req: Request) {
             ],
             { maxTokens: 1200, reasoningEffort: "low" },
           )) {
+            // chatStream prefixes reasoning chunks with __OWL_THINKING__
+            // so we can fan them out to a separate SSE event the
+            // client renders dimmed.
+            const thinking = chunk.startsWith("__OWL_THINKING__");
+            const text = thinking ? chunk.slice("__OWL_THINKING__".length) : chunk;
             controller.enqueue(
-              encoder.encode(`event: delta\ndata: ${JSON.stringify({ text: chunk })}\n\n`),
+              encoder.encode(
+                `event: ${thinking ? "thinking" : "delta"}\ndata: ${JSON.stringify({ text })}\n\n`,
+              ),
             );
           }
           const dt = Date.now() - t0;
