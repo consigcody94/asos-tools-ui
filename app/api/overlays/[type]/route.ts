@@ -19,18 +19,24 @@ export const dynamic = "force-dynamic";
 interface OverlayDef {
   url: string;
   whereClause?: string;
+  /** Hard cap on returned features. NWS WWA in particular can balloon
+   *  to thousands of polygons on active weather days; the cap is a
+   *  safety belt against the response exceeding the proxy buffer. */
+  resultRecordCount?: number;
 }
 
 // Each entry: an ArcGIS REST query URL that returns GeoJSON.
 // Use `outFields=*` + `f=geojson` for FeatureServer / MapServer layers.
 const OVERLAYS: Record<string, OverlayDef> = {
   // Active WWA polygons (warnings / watches / advisories) — operational hot.
-  // Filter to currently-active records: end timestamp in the future.
-  // The full feature class is ~41 MB; the active subset is typically
-  // a few hundred KB and fits an operator's view fine.
+  // Filter to currently-active records via the EXPIRATION column the
+  // NWS WWA service exposes; cap at 500 features so the response
+  // stays under ~2 MB even on heavy-weather days. The full feature
+  // class is ~41 MB without filtering.
   wwa: {
     url: "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer/1/query",
-    whereClause: "end >= CURRENT_TIMESTAMP",
+    whereClause: "EXPIRATION>CURRENT_TIMESTAMP",
+    resultRecordCount: 500,
   },
   // WFO (Weather Forecast Office) county-warning-area boundaries.
   wfo: {
@@ -55,15 +61,18 @@ export async function GET(_req: Request, ctx: { params: Promise<{ type: string }
   const def = OVERLAYS[type];
   if (!def) return NextResponse.json({ error: `unknown overlay: ${type}` }, { status: 404 });
 
+  const query: Record<string, string> = {
+    where: def.whereClause ?? "1=1",
+    outFields: "*",
+    returnGeometry: "true",
+    outSR: "4326",
+    f: "geojson",
+  };
+  if (def.resultRecordCount) query.resultRecordCount = String(def.resultRecordCount);
+
   const data = await fetchJson<unknown>(def.url, {
     timeoutMs: 25_000,
-    query: {
-      where: def.whereClause ?? "1=1",
-      outFields: "*",
-      returnGeometry: "true",
-      outSR: "4326",
-      f: "geojson",
-    },
+    query,
   });
 
   return NextResponse.json(data ?? { type: "FeatureCollection", features: [] });
