@@ -13,7 +13,7 @@ set -euo pipefail
 cd /opt/owl
 export NEXT_TELEMETRY_DISABLED=1
 export npm_config_cache=/opt/owl/.npm
-export PATH=/usr/local/bin:/usr/bin:/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Be a good neighbor: only one puller at a time.
 exec 9>/var/run/owl-puller.lock
