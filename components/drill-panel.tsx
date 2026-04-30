@@ -246,13 +246,52 @@ export function DrillPanel({ station, onClose }: Props) {
           {station.name && (
             <div className="text-[color:var(--color-fg-muted)] text-[0.85rem]">{station.name}</div>
           )}
-          <a
-            href={`https://www.aviationweather.gov/metar/data?ids=${station.id}&format=raw`}
-            target="_blank" rel="noopener noreferrer"
-            className="text-[color:var(--color-accent)] text-[0.72rem] inline-flex items-center gap-1 hover:underline"
-          >
-            AWC <ExternalLink size={10} />
-          </a>
+          {/* Context-aware external link. Each click-kind has its own
+           *  authoritative external page; the previous "always AWC"
+           *  link 404'd for buoys (AWC has no METAR for "41001") and
+           *  for radar sites (KLWX isn't a METAR identifier). Now we
+           *  route to the right service per kind. */}
+          {(() => {
+            const kind = station.kind ?? "asos";
+            const id = station.id;
+            if (kind === "buoy") {
+              return (
+                <a
+                  href={`https://www.ndbc.noaa.gov/station_page.php?station=${id}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-[color:var(--color-accent)] text-[0.72rem] inline-flex items-center gap-1 hover:underline"
+                >
+                  NDBC <ExternalLink size={10} />
+                </a>
+              );
+            }
+            if (kind === "radar") {
+              return (
+                <a
+                  href={`https://radar.weather.gov/station/${id}/standard`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-[color:var(--color-accent)] text-[0.72rem] inline-flex items-center gap-1 hover:underline"
+                >
+                  NWS Radar <ExternalLink size={10} />
+                </a>
+              );
+            }
+            // ASOS, satellite, event, NWR/UA fall through here. Only
+            // ASOS actually has an AWC METAR — for the other kinds we
+            // skip the link entirely rather than ship a 404.
+            if (kind === "asos") {
+              return (
+                <a
+                  href={`https://www.aviationweather.gov/metar/data?ids=${id}&format=raw`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-[color:var(--color-accent)] text-[0.72rem] inline-flex items-center gap-1 hover:underline"
+                >
+                  AWC <ExternalLink size={10} />
+                </a>
+              );
+            }
+            return null;
+          })()}
         </div>
         <button
           onClick={onClose}
