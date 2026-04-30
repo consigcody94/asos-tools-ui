@@ -5,6 +5,7 @@
  */
 
 import Link from "next/link";
+import { BrandLogo } from "@/components/brand-logo";
 import { usePathname } from "next/navigation";
 import {
   Activity, BarChart3, Globe, Info, MapPin, Settings, Cloud, Database,
@@ -40,25 +41,9 @@ export function Sidebar({ pulse }: { pulse?: PulseProps }) {
         flex flex-col
       "
     >
-      {/* Brand */}
+      {/* Brand — animated video logo (mark + name composited inline). */}
       <div className="px-3 py-2 sm:px-5 sm:pt-5 sm:pb-4 border-b border-[color:var(--color-border)]">
-        <div className="flex items-center gap-2">
-          <div
-            className="w-6 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center text-white font-semibold text-sm"
-            style={{ background: "var(--color-accent-strong)" }}
-            aria-hidden
-          >
-            O
-          </div>
-          <div>
-            <div className="text-[0.95rem] font-semibold leading-tight text-[color:var(--color-fg)]">
-              OWL
-            </div>
-            <div className="hidden text-[0.62rem] tracking-[0.1em] uppercase text-[color:var(--color-fg-muted)] leading-tight sm:block">
-              Observation Watch Log
-            </div>
-          </div>
-        </div>
+        <BrandLogo size={180} className="mx-auto sm:mx-0" alt="OWL — Observation Watch Log" />
       </div>
 
       {/* Network pulse (compact) */}
