@@ -20,15 +20,64 @@ export function AiBrief() {
     setLoading(true);
     setText("");
     setErr(null);
+    const t0 = performance.now();
     try {
-      const r = await fetch("/api/ai-brief", { method: "POST" });
-      const d = await r.json();
-      if (!r.ok || !d?.text) {
-        setErr(d?.text || `request failed (${r.status})`);
-      } else {
-        setText(d.text);
-        setDuration(d.duration_ms || null);
+      // Request streaming response. Server returns text/event-stream
+      // with `event: delta` (token chunks) and `event: done` (final
+      // metadata). We append deltas to the buffer as they arrive so
+      // the user sees the brief materialise like a typewriter.
+      const r = await fetch("/api/ai-brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stream: true }),
+      });
+      if (!r.ok || !r.body) {
+        setErr(`request failed (${r.status})`);
+        return;
       }
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let acc = "";
+      let lastEvent = "delta";
+      // Read SSE chunks. Each event is a `event: NAME\ndata: JSON\n\n`
+      // block. We split on the double-newline separator, keep the
+      // tail in the buffer until the next chunk completes it.
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const evt of events) {
+          const lines = evt.split("\n");
+          let evtName = "delta";
+          let dataLine = "";
+          for (const ln of lines) {
+            if (ln.startsWith("event:")) evtName = ln.slice(6).trim();
+            else if (ln.startsWith("data:")) dataLine = ln.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          lastEvent = evtName;
+          try {
+            const obj = JSON.parse(dataLine);
+            if (evtName === "delta" && typeof obj.text === "string") {
+              acc += obj.text;
+              setText(acc);
+            } else if (evtName === "done") {
+              const dt = obj.duration_ms ?? Math.round(performance.now() - t0);
+              setDuration(dt);
+            } else if (evtName === "error") {
+              setErr(obj.error ?? "stream error");
+            }
+          } catch {
+            /* skip malformed event */
+          }
+        }
+      }
+      // If the stream closed without a `done` event, still record the
+      // wall-clock duration so the operator gets useful feedback.
+      if (lastEvent !== "done") setDuration(Math.round(performance.now() - t0));
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -78,7 +127,9 @@ export function AiBrief() {
               </button>
             </div>
 
-            {loading && (
+            {/* Pre-stream skeleton: shows ONLY when loading and no
+                tokens have arrived yet (typically the first 1-3 s). */}
+            {loading && !text && (
               <div className="py-8 text-center">
                 <div className="noc-light noc-light-warn inline-block" />
                 <span className="noc-label text-noc-warn">
@@ -93,20 +144,26 @@ export function AiBrief() {
               </div>
             )}
 
+            {/* Render incrementally: once `text` has any content we
+                show it even while still streaming, with a blinking
+                cursor at the end so it's clear more is coming. */}
             {text && (
               <>
                 <pre className="font-body text-sm leading-relaxed text-noc-text bg-noc-deep border border-noc-border p-4 whitespace-pre-wrap mb-4">
                   {text}
+                  {loading && <span className="ml-1 inline-block w-2 h-4 bg-noc-cyan align-middle animate-pulse" />}
                 </pre>
                 <div className="flex justify-between items-center">
                   <span className="text-[0.7rem] text-noc-dim font-mono">
-                    {duration !== null ? `generated in ${(duration / 1000).toFixed(1)} s` : ""}
+                    {loading
+                      ? "streaming..."
+                      : duration !== null ? `generated in ${(duration / 1000).toFixed(1)} s` : ""}
                   </span>
                   <div className="flex gap-2">
-                    <button onClick={copy} className="noc-btn flex items-center gap-2 text-xs">
+                    <button onClick={copy} disabled={loading} className="noc-btn flex items-center gap-2 text-xs disabled:opacity-50">
                       <Copy size={12} /> Copy
                     </button>
-                    <button onClick={generate} className="noc-btn flex items-center gap-2 text-xs">
+                    <button onClick={generate} disabled={loading} className="noc-btn flex items-center gap-2 text-xs disabled:opacity-50">
                       <Sparkles size={12} /> Regenerate
                     </button>
                   </div>

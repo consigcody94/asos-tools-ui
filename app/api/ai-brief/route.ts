@@ -10,7 +10,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { chat } from "@/lib/openai";
+import { chat, chatStream } from "@/lib/openai";
 import { getScan, getScanReady } from "@/lib/server/scan-cache";
 import { fetchAirSigmet } from "@/lib/server/awc";
 import { trackEvent, trackMetric } from "@/lib/telemetry";
@@ -36,10 +36,17 @@ interface AirSigmet {
 export async function POST(req: Request) {
   const t0 = Date.now();
   let focus: string | undefined;
+  let stream = false;
   try {
-    const body = (await req.json().catch(() => ({}))) as { focus?: string };
+    const body = (await req.json().catch(() => ({}))) as { focus?: string; stream?: boolean };
     focus = body.focus;
+    stream = !!body.stream;
   } catch { /* empty body OK */ }
+  // Also honor ?stream=1 in the query string for easy curl tests.
+  if (!stream) {
+    const u = new URL(req.url);
+    if (u.searchParams.get("stream") === "1") stream = true;
+  }
 
   // Pull live context. Use the *cached* scan — getScanFresh() blocks
   // on a network fetch that can take 60+ seconds when IEM is in
@@ -113,6 +120,65 @@ export async function POST(req: Request) {
       .map(([h, n]) => `  ${h}: ${n}`)
       .join("\n");
 
+  // Streaming path — first token in ~2-3s instead of waiting ~30s
+  // for the full generation. Uses Server-Sent Events with two event
+  // types: `delta` (a token chunk) and `done` (final metadata).
+  if (stream) {
+    const encoder = new TextEncoder();
+    const sse = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of chatStream(
+            [
+              { role: "system", content: sysPrompt },
+              { role: "user", content: userMsg },
+            ],
+            { maxTokens: 1200, reasoningEffort: "low" },
+          )) {
+            controller.enqueue(
+              encoder.encode(`event: delta\ndata: ${JSON.stringify({ text: chunk })}\n\n`),
+            );
+          }
+          const dt = Date.now() - t0;
+          trackMetric("owl.ai_brief.duration_ms", dt);
+          trackEvent("owl.ai_brief.generated", {
+            focus: focus || "all",
+            scan_rows: scanRows.length,
+            sigmets: sigmets.length,
+            duration_ms: dt,
+            mode: "stream",
+          });
+          controller.enqueue(
+            encoder.encode(
+              `event: done\ndata: ${JSON.stringify({
+                duration_ms: dt,
+                context: {
+                  scan_row_count: scanRows.length,
+                  sigmet_count: sigmets.length,
+                  counts,
+                },
+              })}\n\n`,
+            ),
+          );
+        } catch (err) {
+          controller.enqueue(
+            encoder.encode(`event: error\ndata: ${JSON.stringify({ error: String(err) })}\n\n`),
+          );
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(sse, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
+  // Non-streaming path (kept for backward compat + scripted callers).
   const text = await chat(
     [
       { role: "system", content: sysPrompt },
