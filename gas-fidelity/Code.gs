@@ -279,7 +279,11 @@ function fetchJson_(url, options) {
 // pace at ≤ 1 request per 5 seconds and use 80-station batches so
 // 920 stations = 12 calls × 5s = ~60s minimum scan time.
 
-var IEM_BATCH = 80;
+// Batch size for IEM CGI requests. 200 stations per request keeps the
+// URL at ~2.6 KB (well below any plausible server limit) and cuts a
+// 920-station scan from ~96s to ~60s vs. the previous 80-batch tuning.
+// Bumped from 80 in v2.1 — see options analysis in the README.
+var IEM_BATCH = 200;
 var IEM_BASE  = 'https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py';
 var AWC_METAR = 'https://aviationweather.gov/api/data/metar';
 
