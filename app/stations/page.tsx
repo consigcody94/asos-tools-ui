@@ -1,6 +1,7 @@
 import { OpsBanner } from "@/components/ops-banner";
 import { StationsTable } from "./stations-table";
 import { STATIONS } from "@/lib/data/stations";
+import { operatorBucket } from "@/lib/data/operator-display";
 
 export const metadata = { title: "Stations — O.W.L." };
 
@@ -14,8 +15,12 @@ export default function StationsPage() {
     if (s.state) acc[s.state] = (acc[s.state] ?? 0) + 1;
     return acc;
   }, {});
+  // Bucket by display name so "—" / NWS / NOAA all collapse into the
+  // single "NOAA/SUAD" counter — operators expect one number for the
+  // SUAD-program stations, not three split buckets.
   const totalByOperator = STATIONS.reduce<Record<string, number>>((acc, s) => {
-    acc[s.operator] = (acc[s.operator] ?? 0) + 1;
+    const k = operatorBucket(s.operator);
+    acc[k] = (acc[k] ?? 0) + 1;
     return acc;
   }, {});
 

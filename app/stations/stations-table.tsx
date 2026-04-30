@@ -14,6 +14,7 @@
 import { useMemo, useState } from "react";
 import { Search, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { type Station } from "@/lib/data/stations";
+import { displayOperator } from "@/lib/data/operator-display";
 
 type SortKey = "id" | "name" | "state" | "operator" | "lat" | "lon" | "elev_ft";
 
@@ -35,7 +36,10 @@ export function StationsTable({ stations }: Props) {
           s.id.toLowerCase().includes(q) ||
           s.name.toLowerCase().includes(q) ||
           s.state.toLowerCase().includes(q) ||
-          s.operator.toLowerCase().includes(q) ||
+          // Search both raw and displayed forms so users can type
+          // "noaa" or "suad" and find the em-dash-flagged stations.
+          (s.operator.toLowerCase().includes(q) ||
+            displayOperator(s.operator).toLowerCase().includes(q)) ||
           (s.iata || "").toLowerCase().includes(q) ||
           (s.wmo || "").toLowerCase().includes(q)
         );
@@ -121,7 +125,7 @@ export function StationsTable({ stations }: Props) {
                 <td className="px-3 py-1.5 text-noc-text font-body">{s.name}</td>
                 <td className="px-3 py-1.5 text-noc-muted">{s.state}</td>
                 <td className="px-3 py-1.5 text-noc-muted font-body uppercase tracking-wider text-[0.7rem]">
-                  {s.operator}
+                  {displayOperator(s.operator)}
                 </td>
                 <td className="px-3 py-1.5 text-noc-dim text-right tabular-nums">
                   {s.lat?.toFixed(4)}

@@ -8,6 +8,7 @@
 
 import { useMemo, useState } from "react";
 import { type Station } from "@/lib/data/stations";
+import { displayOperator, operatorBucket } from "@/lib/data/operator-display";
 
 interface OpRow {
   operator: string;
@@ -65,7 +66,11 @@ export function AomcDashboard({ rollup, rows, stations }: Props) {
       .filter((r) => {
         const meta = r.station ? stationByIcao.get(r.station) : undefined;
         if (filterOp !== "ALL") {
-          if (!meta || meta.operator !== filterOp) return false;
+          // filterOp is set from the aggregated rows' display name
+          // ("NOAA/SUAD" / "FAA" / "DOD"), but meta.operator is the
+          // raw catalog value ("—" / "FAA" / "DOD"). Compare buckets
+          // so the em-dash rows match the "NOAA/SUAD" filter.
+          if (!meta || operatorBucket(meta.operator) !== filterOp) return false;
         }
         const st = (r.status || "NO DATA").toUpperCase();
         if (filterStatus !== "ALL" && !wanted.has(st)) return false;
@@ -194,7 +199,7 @@ export function AomcDashboard({ rollup, rows, stations }: Props) {
                     </td>
                     <td className="px-3 py-1.5 text-noc-muted">{meta?.state || ""}</td>
                     <td className="px-3 py-1.5 text-noc-muted font-body uppercase tracking-wider text-[0.7rem]">
-                      {meta?.operator || "—"}
+                      {displayOperator(meta?.operator)}
                     </td>
                     <td className="px-3 py-1.5 font-display font-bold uppercase tracking-wider text-[0.7rem]" style={{ color: tone }}>
                       {st}

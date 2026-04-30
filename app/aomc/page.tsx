@@ -2,6 +2,7 @@ import { OpsBanner } from "@/components/ops-banner";
 import { AomcDashboard } from "./aomc-dashboard";
 import { STATIONS } from "@/lib/data/stations";
 import { OWL_API_BASE } from "@/lib/api";
+import { operatorBucket } from "@/lib/data/operator-display";
 
 export const metadata = { title: "AOMC Controllers — O.W.L." };
 export const revalidate = 30;
@@ -38,10 +39,14 @@ export default async function AomcPage() {
     if (r.station) statusByStation.set(r.station, (r.status || "NO DATA").toUpperCase());
   }
   for (const s of STATIONS) {
-    let row = byOp.get(s.operator);
+    // Aggregate by display name so "—" / NWS / NOAA all collapse to
+    // the single "NOAA/SUAD" row — operators expect one bucket per
+    // operating organization, not three split bins.
+    const opKey = operatorBucket(s.operator);
+    let row = byOp.get(opKey);
     if (!row) {
-      row = { operator: s.operator, total: 0, clean: 0, flagged: 0, missing: 0, intermittent: 0, recovered: 0, noData: 0 };
-      byOp.set(s.operator, row);
+      row = { operator: opKey, total: 0, clean: 0, flagged: 0, missing: 0, intermittent: 0, recovered: 0, noData: 0 };
+      byOp.set(opKey, row);
     }
     row.total++;
     const st = statusByStation.get(s.id) || "NO DATA";

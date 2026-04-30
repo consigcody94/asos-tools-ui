@@ -9,6 +9,7 @@
 
 import { useMemo, useState } from "react";
 import { type Station } from "@/lib/data/stations";
+import { displayOperator } from "@/lib/data/operator-display";
 import { AlertTriangle, Plane, Search } from "lucide-react";
 
 interface AirSigmet {
@@ -264,7 +265,7 @@ function StationView({ stations }: { stations: Station[] }) {
 
       {matchedStation && (
         <div className="mb-4 noc-label text-[0.7rem]">
-          {matchedStation.name} &middot; {matchedStation.state} &middot; {matchedStation.operator}
+          {matchedStation.name} &middot; {matchedStation.state} &middot; {displayOperator(matchedStation.operator)}
           &middot; {matchedStation.lat?.toFixed(2)}, {matchedStation.lon?.toFixed(2)}
         </div>
       )}
