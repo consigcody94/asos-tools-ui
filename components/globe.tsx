@@ -274,9 +274,30 @@ export function Globe({
         const f = e.features?.[0];
         if (!f) return;
         const props = f.properties as GlobePoint;
-        // GeoJSON properties round-trip through JSON.stringify, so
-        // numeric fields stay numeric but extra keys are preserved.
-        clickRef.current?.(props);
+        // CRITICAL: GeoJSON properties does NOT carry coordinates —
+        // those live on `geometry.coordinates`. The click handler in
+        // summary-client.tsx trusts p.lat/p.lng directly for buoy /
+        // radar clicks (since they aren't in the AOMC catalog where
+        // a lookup would supply coords), so leaving lat/lng undefined
+        // here causes `station.lat.toFixed()` to TypeError downstream
+        // — which triggers Next.js's "This page couldn't load" error
+        // boundary. Merge the geometry coords into props so every
+        // consumer has them.
+        let lat: number | undefined;
+        let lng: number | undefined;
+        if (f.geometry?.type === "Point") {
+          const coords = f.geometry.coordinates as [number, number];
+          if (Array.isArray(coords) && coords.length >= 2) {
+            lng = coords[0];
+            lat = coords[1];
+          }
+        }
+        const enriched: GlobePoint = {
+          ...props,
+          lat: lat ?? props.lat,
+          lng: lng ?? props.lng,
+        };
+        clickRef.current?.(enriched);
       });
 
       map.on("mouseenter", LAYER_ID, (e) => {

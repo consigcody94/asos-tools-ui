@@ -214,8 +214,15 @@ export function DrillPanel({ station, onClose }: Props) {
 
   if (!station) return null;
 
-  const goesUrl = goesLoopFor(station.lat, station.lng);
-  const radarUrl = stationRadarLoop(station.lat, station.lng);
+  // Coerce to numbers with sensible CONUS-center defaults so the
+  // URL builders never receive undefined and never throw. With the
+  // upstream globe.tsx fix these defaults should never be exercised,
+  // but they protect against any future click path that forgets to
+  // populate coordinates.
+  const safeLat = typeof station.lat === "number" ? station.lat : 38;
+  const safeLng = typeof station.lng === "number" ? station.lng : -97;
+  const goesUrl = goesLoopFor(safeLat, safeLng);
+  const radarUrl = stationRadarLoop(safeLat, safeLng);
 
   const copyId = async () => {
     try {
@@ -310,7 +317,20 @@ export function DrillPanel({ station, onClose }: Props) {
           label="Age"
           value={station.minutesSinceLast != null ? `${station.minutesSinceLast} min` : "--"}
         />
-        <StationMetric label="Position" value={`${station.lat.toFixed(3)}, ${station.lng.toFixed(3)}`} />
+        <StationMetric
+          label="Position"
+          value={
+            // Defense-in-depth: even though globe.tsx now guarantees
+            // lat/lng are populated from feature.geometry.coordinates,
+            // the drill panel must NEVER throw on a missing field —
+            // a TypeError here triggers Next.js's global error boundary
+            // and the user sees "This page couldn't load." Treat
+            // unknown coords as a display gap, not a crash.
+            typeof station.lat === "number" && typeof station.lng === "number"
+              ? `${station.lat.toFixed(3)}, ${station.lng.toFixed(3)}`
+              : "--"
+          }
+        />
       </div>
 
       {/* Diagnostic timeline — surfaces all the new fields:
