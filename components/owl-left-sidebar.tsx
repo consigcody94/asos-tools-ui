@@ -210,10 +210,13 @@ export function OwlLeftSidebar({
             </div>
           )}
           <OverlayCheck label="WWA (active alerts)" k="wwa" filters={filters} patch={patch} />
-          <OverlayCheck label="WFO Footprints" k="wfo" filters={filters} patch={patch} />
-          <OverlayCheck label="RFC Boundaries" k="rfc" filters={filters} patch={patch} />
-          <OverlayCheck label="CWSU Boundaries" k="cwsu" filters={filters} patch={patch} />
           <OverlayCheck label="Time Zones" k="timezones" filters={filters} patch={patch} />
+          {/* WFO / RFC / CWSU public ArcGIS endpoints are currently 404
+              upstream — leaving these disabled until we host static
+              GeoJSON ourselves or NWS republishes the layers. */}
+          <ProgramCheck label="WFO Footprints" disabled hint="upstream unavailable" />
+          <ProgramCheck label="RFC Boundaries" disabled hint="upstream unavailable" />
+          <ProgramCheck label="CWSU Boundaries" disabled hint="upstream unavailable" />
         </div>
       </Card>
 

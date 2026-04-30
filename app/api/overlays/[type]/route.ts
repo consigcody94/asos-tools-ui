@@ -35,7 +35,9 @@ const OVERLAYS: Record<string, OverlayDef> = {
   // class is ~41 MB without filtering.
   wwa: {
     url: "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer/1/query",
-    whereClause: "EXPIRATION>CURRENT_TIMESTAMP",
+    // Field is lowercase `expiration` in the layer schema; it's a
+    // datetime in the future for currently-active alerts.
+    whereClause: "expiration>CURRENT_TIMESTAMP",
     resultRecordCount: 500,
   },
   // WFO (Weather Forecast Office) county-warning-area boundaries.

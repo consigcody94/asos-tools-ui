@@ -43,15 +43,17 @@ export async function fetchAirSigmet(): Promise<Array<Record<string, unknown>>> 
     return _sigmetCache.rows;
   }
   try {
+    // retries=0 + tight timeout so the AI Brief endpoint doesn't get
+    // stuck behind AWC backoff cycles. If upstream is slow, return
+    // stale (or empty) and let the next 5-min cache-refresh retry.
     const data = await fetchJson<Array<Record<string, unknown>>>(`${BASE}/airsigmet`, {
-      query: { format: "json" }, timeoutMs: 8_000,
+      query: { format: "json" }, timeoutMs: 6_000, retries: 1,
     });
     const rows = Array.isArray(data) ? data : [];
     _sigmetCache = { at: Date.now(), rows };
     return rows;
   } catch (err) {
     console.warn("[awc] airsigmet fetch failed:", (err as Error).message);
-    // Serve stale rather than empty when upstream is flaky.
     return _sigmetCache?.rows ?? [];
   }
 }
