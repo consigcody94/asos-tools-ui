@@ -23,6 +23,17 @@ interface OverlayDef {
    *  to thousands of polygons on active weather days; the cap is a
    *  safety belt against the response exceeding the proxy buffer. */
   resultRecordCount?: number;
+  /** Decimal places of geometry precision. ArcGIS rounds coordinates
+   *  to this many digits, dropping ~95% of the bytes of a typical
+   *  detailed polygon with no visible loss at zoom 4–7. WWA's raw
+   *  6-digit coordinates produce 45 MB; precision=2 (~1 km) is
+   *  visually identical at the operator's typical CONUS view and
+   *  drops the response to a few hundred KB. */
+  geometryPrecision?: number;
+  /** Douglas–Peucker simplification tolerance in degrees (lat/lon).
+   *  0.05° ≈ 5.5 km — collapses near-collinear vertices that the
+   *  human eye can't resolve at the rendered scale. */
+  maxAllowableOffset?: number;
 }
 
 // Each entry: an ArcGIS REST query URL that returns GeoJSON.
@@ -39,27 +50,44 @@ const OVERLAYS: Record<string, OverlayDef> = {
     // datetime in the future for currently-active alerts.
     whereClause: "expiration>CURRENT_TIMESTAMP",
     resultRecordCount: 500,
+    geometryPrecision: 2,
+    maxAllowableOffset: 0.02,
   },
-  // WFO (Weather Forecast Office) county-warning-area boundaries.
-  wfo: {
-    url: "https://mapservices.weather.noaa.gov/static/rest/services/NWS_Reference_Maps/NWS_Reference_Map/MapServer/4/query",
-  },
-  // RFC (River Forecast Center) boundaries.
-  rfc: {
-    url: "https://mapservices.weather.noaa.gov/static/rest/services/NWS_Reference_Maps/NWS_Reference_Map/MapServer/5/query",
-  },
-  // CWSU (Center Weather Service Unit) boundaries.
-  cwsu: {
-    url: "https://mapservices.weather.noaa.gov/static/rest/services/NWS_Reference_Maps/NWS_Reference_Map/MapServer/3/query",
-  },
-  // World time zones (Esri Living Atlas).
+  // World time zones (Esri Living Atlas) — already lightweight.
   timezones: {
     url: "https://services.arcgis.com/iQ1dY19aHwbSDYIF/ArcGIS/rest/services/World_Time_Zones/FeatureServer/0/query",
+    geometryPrecision: 1,
   },
+};
+
+// NWS API zones — different shape than ArcGIS (returns GeoJSON
+// FeatureCollection directly, no query params needed). The
+// `type` parameter on this API maps to NWS forecast zone types:
+//   forecast  → public-zone forecast areas (~700 polygons, the
+//               "WFO footprint" operators usually mean)
+//   fire      → fire-weather zones (~600 polygons, RFC-adjacent)
+//   coastal   → coastal marine zones (~500 polygons, CWSU-adjacent)
+const NWS_API_ZONES: Record<string, string> = {
+  wfo:  "https://api.weather.gov/zones?type=forecast&include_geometry=true&limit=2000",
+  rfc:  "https://api.weather.gov/zones?type=fire&include_geometry=true&limit=2000",
+  cwsu: "https://api.weather.gov/zones?type=coastal&include_geometry=true&limit=2000",
 };
 
 export async function GET(_req: Request, ctx: { params: Promise<{ type: string }> }) {
   const { type } = await ctx.params;
+
+  // NWS API path (different shape than ArcGIS — no query params needed,
+  // response is already a GeoJSON FeatureCollection).
+  const nwsUrl = NWS_API_ZONES[type];
+  if (nwsUrl) {
+    const data = await fetchJson<unknown>(nwsUrl, {
+      timeoutMs: 25_000,
+      headers: { Accept: "application/geo+json" },
+    });
+    return NextResponse.json(data ?? { type: "FeatureCollection", features: [] });
+  }
+
+  // ArcGIS REST path.
   const def = OVERLAYS[type];
   if (!def) return NextResponse.json({ error: `unknown overlay: ${type}` }, { status: 404 });
 
@@ -71,6 +99,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ type: string }
     f: "geojson",
   };
   if (def.resultRecordCount) query.resultRecordCount = String(def.resultRecordCount);
+  if (def.geometryPrecision != null) query.geometryPrecision = String(def.geometryPrecision);
+  if (def.maxAllowableOffset != null) query.maxAllowableOffset = String(def.maxAllowableOffset);
 
   const data = await fetchJson<unknown>(def.url, {
     timeoutMs: 25_000,

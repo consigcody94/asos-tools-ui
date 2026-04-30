@@ -211,12 +211,13 @@ export function OwlLeftSidebar({
           )}
           <OverlayCheck label="WWA (active alerts)" k="wwa" filters={filters} patch={patch} />
           <OverlayCheck label="Time Zones" k="timezones" filters={filters} patch={patch} />
-          {/* WFO / RFC / CWSU public ArcGIS endpoints are currently 404
-              upstream — leaving these disabled until we host static
-              GeoJSON ourselves or NWS republishes the layers. */}
-          <ProgramCheck label="WFO Footprints" disabled hint="upstream unavailable" />
-          <ProgramCheck label="RFC Boundaries" disabled hint="upstream unavailable" />
-          <ProgramCheck label="CWSU Boundaries" disabled hint="upstream unavailable" />
+          {/* WFO / RFC / CWSU now sourced from api.weather.gov/zones
+              (forecast / fire / coastal types). NWS retired the older
+              ArcGIS reference-map service in early 2026; the zones API
+              has the same boundaries and is officially supported. */}
+          <OverlayCheck label="WFO Footprints (forecast zones)" k="wfo" filters={filters} patch={patch} />
+          <OverlayCheck label="RFC / Fire Zones" k="rfc" filters={filters} patch={patch} />
+          <OverlayCheck label="CWSU / Coastal Zones" k="cwsu" filters={filters} patch={patch} />
         </div>
       </Card>
 
