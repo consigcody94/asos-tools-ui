@@ -142,7 +142,8 @@ var TAB_HEALTH       = 'Health';
 var TAB_STATE_LOG    = 'StateLog';      // per-station rolling state
 var TAB_ACTIVE_USERS = 'ActiveUsers';
 var TAB_USER_HIST    = 'UserHistory';
-var TAB_ADMIN_ACCESS = 'AdminAccess';
+/** Banner workbook tab — sticky operator messages (legacy parity). */
+var TAB_BANNERS      = 'Banners';
 
 /** SUAD-spec classifier thresholds. */
 var MISSING_SILENCE_MIN     = 75;       // 1h cycle + 15m grace
@@ -653,9 +654,26 @@ function statusToLogState_(status) {
 
 /** Read every entry into { station: [ {at, state}, ... ] } sorted oldest-first. */
 function readStateLog_() {
-  var sh = getOrCreateSheet_(TAB_STATE_LOG, ['Station', 'Hour ISO', 'State']);
+  // ScriptCache primary (fast, in-memory, ≤ 6 h TTL on Apps Script's
+  // promise). Sheet fallback for cold starts / cache evictions.
+  var cache = CacheService.getScriptCache();
+  var raw = cache.get('state_log_v2');
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) { /* fall through */ }
+  }
+  var sh = getOrCreateSheet_(TAB_STATE_LOG, ['JSON Snapshot']);
+  // The new schema stores the entire log as a single JSON cell at A2.
+  // The old schema stored row-per-(station, hour). We support both for
+  // a smooth upgrade path.
+  if (sh.getLastRow() < 2) return {};
+  var firstRow = sh.getRange(2, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0];
+  var first = String(firstRow[0] || '').trim();
+  // New schema: cell A2 starts with '{'.
+  if (first.charAt(0) === '{') {
+    try { return JSON.parse(first); } catch (_) { return {}; }
+  }
+  // Old schema: read row-by-row (legacy upgrade path).
   var lastRow = sh.getLastRow();
-  if (lastRow < 2) return {};
   var vals = sh.getRange(2, 1, lastRow - 1, 3).getValues();
   var byStation = {};
   for (var i = 0; i < vals.length; i++) {
@@ -666,7 +684,6 @@ function readStateLog_() {
     if (!byStation[st]) byStation[st] = [];
     byStation[st].push({ at: at, state: state });
   }
-  // Sort each list oldest→newest and trim to STATE_LOG_HOURS depth.
   for (var s in byStation) {
     byStation[s].sort(function (a, b) { return a.at < b.at ? -1 : 1; });
     if (byStation[s].length > STATE_LOG_HOURS) {
@@ -676,24 +693,29 @@ function readStateLog_() {
   return byStation;
 }
 
-/** Persist the rolling log. Replaces prior rows entirely. Bounded by
- *  STATE_LOG_HOURS per station so the sheet doesn't grow unbounded. */
+/** Persist the rolling log as a single JSON cell + ScriptCache mirror.
+ *  This replaced the legacy row-per-(station, hour) schema because the
+ *  legacy schema burned ~5,500 cell writes per scan on the full 920-
+ *  station network — well past Apps Script's 1M-cells/day consumer
+ *  quota. Single-cell JSON: 1 cell write per scan, regardless of
+ *  station count. */
 function writeStateLog_(byStation) {
-  var sh = getOrCreateSheet_(TAB_STATE_LOG, ['Station', 'Hour ISO', 'State']);
-  var rows = [];
-  for (var s in byStation) {
-    var list = byStation[s];
-    for (var i = 0; i < list.length; i++) {
-      rows.push([s, list[i].at, list[i].state]);
-    }
+  var json = JSON.stringify(byStation);
+  // Cache for fast same-process reads. ScriptCache caps at 100 KB —
+  // 30-station × 6 hours fits trivially; 920-station × 6 hours is
+  // ~165 KB and won't fit, so we tolerate the cache miss in that case.
+  if (json.length < 100 * 1024) {
+    CacheService.getScriptCache().put('state_log_v2', json, 6 * 3600);
   }
-  // Clear data area, write fresh.
-  if (sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, 3).clearContent();
+  // Persist to sheet (always — for cross-process warm-restore).
+  var sh = getOrCreateSheet_(TAB_STATE_LOG, ['JSON Snapshot']);
+  // Wipe any legacy row-schema data first (one-time upgrade cost).
+  if (sh.getLastRow() > 2 || sh.getLastColumn() > 1) {
+    sh.clearContents();
+    sh.getRange(1, 1).setValue('JSON Snapshot').setFontWeight('bold');
+    sh.setFrozenRows(1);
   }
-  if (rows.length > 0) {
-    sh.getRange(2, 1, rows.length, 3).setValues(rows);
-  }
+  sh.getRange(2, 1).setValue(json);
 }
 
 /** Detect the SUAD-spec INTERMITTENT signature in a single station's
@@ -1007,7 +1029,7 @@ function fetchUsdmCurrent_() {
 /** EPA AirNow current AQI for a single (lat, lon). Requires
  *  AIRNOW_API_KEY Script Property; returns null when unset (so the
  *  drill panel just doesn't render that section). Free key from
- *  https://docs.airnowapi.org/. */
+ *  https://docs.airnowapi.org/ */
 function fetchAirNowAt_(lat, lon, radiusMi) {
   var key = PROP('AIRNOW_API_KEY', '');
   if (!key) return null;
@@ -1250,6 +1272,125 @@ function trackActiveUser_(user, page) {
   if (hl > 502) hist.deleteRows(2, hl - 502);
 }
 
+/** ADMIN_EMAILS gate — comma-separated allow-list in Script Properties.
+ *  Returns {allowed: true} when the gate is unset (admin-open) or when
+ *  the current user is on the list. Otherwise {allowed: false} with a
+ *  user-friendly reason.
+ *
+ *  Apps Script web apps deployed with "Execute as: User accessing the
+ *  web app" expose Session.getActiveUser().getEmail() — that's the
+ *  signal we check. Web apps deployed with "Execute as: Me" do NOT
+ *  expose the visitor's email (intentional sandbox boundary), so the
+ *  gate is effectively unenforceable in that mode. We surface that as
+ *  a config warning rather than a hard fail. */
+function enforceAdminAccess_() {
+  var allowList = PROP('ADMIN_EMAILS', '');
+  if (!allowList) return { allowed: true, mode: 'open' };
+  var allowed = allowList.split(',').map(function (s) {
+    return s.trim().toLowerCase();
+  }).filter(Boolean);
+  var viewer = '';
+  try {
+    viewer = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+  } catch (_) { /* may throw under "execute as Me" deployments */ }
+  if (!viewer) {
+    return {
+      allowed: false,
+      mode: 'unknown-viewer',
+      message:
+        'ADMIN_EMAILS is set but the web app cannot identify the viewer. ' +
+        'Apps Script only exposes viewer email when the deployment is configured ' +
+        'as "Execute as: User accessing the web app" AND the access scope is ' +
+        '"Anyone in your Workspace" (not "Anyone"). Either redeploy with those ' +
+        'settings, OR clear the ADMIN_EMAILS Script Property to leave admin open.',
+    };
+  }
+  if (allowed.indexOf(viewer) === -1) {
+    return {
+      allowed: false,
+      mode: 'not-listed',
+      viewer: viewer,
+      message: 'Access denied. ' + viewer + ' is not on the ADMIN_EMAILS allow-list.',
+    };
+  }
+  return { allowed: true, mode: 'allowed', viewer: viewer };
+}
+
+// ---- Banners (sticky operator messages — legacy parity) ----------
+//
+// James Glenn's app fed sticky banners from a Sheet column. We do the
+// same — operators paste/edit rows in the Banners tab and they appear
+// at the top of every page until removed. Schema:
+//
+//   Banners: Active(TRUE/FALSE) | Severity(info|warning|critical) |
+//            Message | Created UTC
+//
+// Cached 60s in ScriptCache so the dashboard polls don't hit the
+// Sheet on every tick.
+
+function fetchBanners_() {
+  var cache = CacheService.getScriptCache();
+  var raw = cache.get('banners_v1');
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) { /* fall through */ }
+  }
+  var sh;
+  try { sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_BANNERS); }
+  catch (_) { return []; }
+  if (!sh || sh.getLastRow() < 2) return [];
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 4).getValues();
+  var rows = [];
+  for (var i = 0; i < vals.length; i++) {
+    var active = String(vals[i][0]).toLowerCase();
+    if (active !== 'true' && active !== '1' && active !== 'yes') continue;
+    var sev = String(vals[i][1] || 'info').toLowerCase();
+    if (['info', 'warning', 'critical'].indexOf(sev) === -1) sev = 'info';
+    var msg = String(vals[i][2] || '').trim();
+    var created = String(vals[i][3] || '').trim();
+    if (!msg) continue;
+    rows.push({ severity: sev, message: msg, created: created });
+  }
+  cache.put('banners_v1', JSON.stringify(rows), 60);
+  return rows;
+}
+
+// ---- Sources Health (admin tab + JSON endpoint) -------------------
+//
+// Returns the full canonical source registry with their last-fetch
+// status. Replaces the legacy "sources" sheet that James Glenn had
+// to maintain by hand — we generate it from the wired-in fetcher
+// list directly. Operators can audit "is OWL pulling everything we
+// expect?" in one place.
+
+function buildSourcesRegistry_() {
+  var hazards = null;
+  try { hazards = JSON.parse(CacheService.getScriptCache().get('hazards_v1') || 'null'); }
+  catch (_) { /* ignore */ }
+  var stale = (hazards && hazards.stale_sources) || [];
+  function entry(id, name, url, used_for) {
+    return {
+      id: id, name: name, url: url, used_for: used_for,
+      stale: stale.indexOf(id) >= 0,
+    };
+  }
+  return [
+    entry('iem',          'Iowa Mesonet',           'https://mesonet.agron.iastate.edu', 'Primary METAR batch fetch'),
+    entry('awc-metar',    'AWC METAR API',          'https://aviationweather.gov/api/data/metar', 'Per-station fallback for IEM orphans'),
+    entry('ncei',         'NCEI Access Services',   'https://www.ncei.noaa.gov/access/services/data/v1', 'Cross-check against authoritative archive'),
+    entry('cap',          'NWS CAP alerts',         'https://api.weather.gov/alerts/active', 'Active warnings/watches/advisories'),
+    entry('ncep-sdm',     'NCEP SDM bulletins',     'https://api.weather.gov/products/types/ADASDM/locations/KWNO', 'Network-wide outage admin messages'),
+    entry('sigmet',       'AWC SIGMETs',            'https://aviationweather.gov/api/data/airsigmet', 'SIGMETs + Alaska AIRMETs'),
+    entry('gairmet',      'AWC G-AIRMETs',          'https://aviationweather.gov/api/data/gairmet', 'CONUS gridded AIRMETs (post-Jan 2025)'),
+    entry('cwa',          'AWC CWAs',               'https://aviationweather.gov/api/data/cwa', 'Center Weather Advisories'),
+    entry('nhc',          'NHC tropical',           'https://www.nhc.noaa.gov/CurrentStorms.json', 'Active tropical cyclones'),
+    entry('tsunami',      'NWS Tsunami (NTWC+PTWC)','https://www.tsunami.gov/', 'Active tsunami bulletins'),
+    entry('nifc',         'NIFC wildfires (WFIGS)', 'https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer', 'Active US wildfires'),
+    entry('usdm',         'US Drought Monitor',     'https://droughtmonitor.unl.edu/data/json/usdm_current.json', 'Weekly drought severity'),
+    entry('airnow',       'EPA AirNow',             'https://www.airnowapi.org/', 'AQI per coordinate (key required)'),
+    entry('nwps',         'NOAA NWPS',              'https://api.water.noaa.gov/nwps/v1/', 'Nearest river gauge + flood stages'),
+  ];
+}
+
 function readActiveUserSummary_() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_ACTIVE_USERS);
   if (!sh || sh.getLastRow() < 2) return { active: 0, unique: 0, rows: [] };
@@ -1488,6 +1629,12 @@ function appendHistory_(eventType, data) {
 //   ?api=missing   → JSON missing-stations buckets
 //   ?api=intermittent → JSON SUAD-spec intermittent list
 //   ?api=heartbeat → POST per page load (Active Users tracking)
+//   ?api=users     → JSON active/unique user counts
+//   ?api=usdm      → JSON US Drought Monitor summary
+//   ?api=airnow    → JSON AirNow AQI for ?lat=&lon= (needs API key)
+//   ?api=nwps      → JSON nearest river gauge + flood stages
+//   ?api=sources   → JSON full source registry + stale-source flags
+//   ?api=banners   → JSON sticky operator messages from Banners sheet
 
 function doGet(e) {
   e = e || {};
@@ -1502,6 +1649,17 @@ function doGet(e) {
   // ---- HTML paths render templates ----
   var pagePath = (p.path || p.page || '').toLowerCase();
   if (pagePath === 'admin') {
+    // Optional gate via ADMIN_EMAILS Script Property. When set
+    // (comma-separated allow-list), only the listed emails see the
+    // admin page; everyone else gets a friendly access-denied page.
+    // When unset, admin is open to anyone with the URL — same
+    // behavior as v3.36 and earlier.
+    var gate = enforceAdminAccess_();
+    if (gate.allowed === false) {
+      return HtmlService.createHtmlOutput(renderAdminDeniedHtml_(gate))
+        .setTitle('OWL Status — Admin (denied)')
+        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
     return HtmlService.createHtmlOutput(renderAdminHtml_())
       .setTitle('OWL Status — Admin')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -1576,6 +1734,12 @@ function apiResponse_(path, p) {
       return jsonResponse_({ error: 'lat and lon required' });
     }
     return jsonResponse_(fetchNwpsNearest_(nlat, nlon, Number(p.radius_km || 75)) || { warming: true });
+  }
+  if (path === 'sources') {
+    return jsonResponse_({ sources: buildSourcesRegistry_() });
+  }
+  if (path === 'banners') {
+    return jsonResponse_({ banners: fetchBanners_() });
   }
   return jsonResponse_({ error: 'unknown api path: ' + path }, 404);
 }
@@ -1685,6 +1849,9 @@ function renderShell_(title, body, opts) {
     '    <a href="' + webappUrl + '?path=about">About</a>',
     '  </nav>',
     '</header>',
+    // Banner strip — populated by JS on every page load. Hidden
+    // (display:none) until at least one banner row arrives.
+    '<div id="banner-strip" style="display:none"></div>',
     '<main class="main">' + body + '</main>',
     '<footer class="ftr">' +
       'Apps Script unified build · ' + new Date().toUTCString() +
@@ -1759,6 +1926,50 @@ function renderAdminHtml_() {
     '</section>',
   ].join('\n');
   return renderShell_('OWL Status — Admin', body);
+}
+
+/** Access-denied page for admin gate failures. Shows the specific
+ *  reason (mode = 'unknown-viewer' | 'not-listed') so operators can
+ *  fix the deploy config or update the allow-list. */
+function renderAdminDeniedHtml_(gate) {
+  var msg = (gate && gate.message) || 'Admin access denied.';
+  var viewer = (gate && gate.viewer) ? gate.viewer : '(not detected)';
+  var body = [
+    '<section class="about" style="max-width:720px">',
+    '<h1>Admin — Access Denied</h1>',
+    '<p class="muted">Viewer: <code>' + escHtml_(viewer) + '</code></p>',
+    '<p>' + escHtml_(msg) + '</p>',
+    '<h2>Fix it</h2>',
+    '<ul>',
+    '  <li>Open <strong>Project Settings → Script Properties</strong>.</li>',
+    '  <li>If you want admin open to anyone with the URL, <strong>delete</strong> ',
+    '      the <code>ADMIN_EMAILS</code> property.</li>',
+    '  <li>If you want gated access, redeploy the web app with ',
+    '      <strong>Execute as: User accessing the web app</strong> AND ',
+    '      <strong>Who has access: Anyone in your Workspace</strong>. ',
+    '      The "Anyone" public scope hides viewer email from the script ',
+    '      so the gate cannot work in that mode.</li>',
+    '  <li>Add the visitor\'s email to <code>ADMIN_EMAILS</code> ',
+    '      (comma-separated list).</li>',
+    '</ul>',
+    '</section>',
+  ].join('\n');
+  return renderShell_('OWL Status — Access Denied', body);
+}
+
+/** HTML-escape a server-side string for safe insertion into the
+ *  inline templates. The inline templates are JS string concatenation
+ *  in Code.gs, so any field that traces back to operator input or
+ *  external data should be escaped here before it lands in the
+ *  rendered HTML. */
+function escHtml_(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function renderAboutHtml_() {
@@ -1849,6 +2060,11 @@ var INLINE_CSS = [
   '.maplibregl-popup-content{background:var(--surface) !important;color:var(--fg) !important;border:1px solid var(--border);font-size:.72rem;padding:10px 14px !important}',
   '.maplibregl-popup-tip{border-top-color:var(--surface) !important;border-bottom-color:var(--surface) !important}',
   '.admin-pre{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:.78rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;color:var(--fg)}',
+  '#banner-strip{padding:0 16px}',
+  '#banner-strip > div{padding:8px 14px;margin:6px 0;border-radius:6px;font-size:.78rem;font-weight:600}',
+  '#banner-strip > div.info{background:rgba(95,168,230,.18);color:var(--info);border:1px solid var(--info)}',
+  '#banner-strip > div.warning{background:rgba(224,167,58,.18);color:var(--warn);border:1px solid var(--warn)}',
+  '#banner-strip > div.critical{background:rgba(226,92,107,.32);color:#fff;border:1px solid var(--bad);animation:pulse 1.4s infinite}',
   '.about dl.defs dt{font-weight:700;color:var(--accent);margin-top:8px}',
   '.about dl.defs dd{margin:0 0 8px 0;color:var(--fg-dim)}',
   '.about ul.sources li{padding:3px 0;color:var(--fg-dim)}',
@@ -2039,10 +2255,18 @@ var INLINE_JS = [
   '    } else {',
   '      setSafe("admin-usdm", "<p class=muted>USDM data not available.</p>");',
   '    }',
-  '    var stale = h.stale_sources && h.stale_sources.length',
-  '      ? "<p class=muted>Stale: "+ esc(h.stale_sources.join(", ")) +"</p>"',
-  '      : "<p>All sources fresh.</p>";',
-  '    setSafe("admin-sources", stale);',
+  '  });',
+  '  // Richer Sources Health table from /api/sources — includes every',
+  '  // wired source, not just the stale ones.',
+  '  fetchJson(BASE+"?api=sources").then(function(s){',
+  '    var rows = (s && s.sources) || [];',
+  '    var html = ["<table class=sites><tr><th>Source</th><th>Status</th><th>Used For</th></tr>"];',
+  '    rows.forEach(function(r){',
+  '      var pill = r.stale ? "<span class=\\"pill MISSING\\">STALE</span>" : "<span class=\\"pill CLEAN\\">OK</span>";',
+  '      html.push("<tr><td><strong>"+esc(r.name)+"</strong></td><td>"+pill+"</td><td>"+esc(r.used_for)+"</td></tr>");',
+  '    });',
+  '    html.push("</table>");',
+  '    setSafe("admin-sources", html.join(""));',
   '  });',
   '  fetchJson(BASE+"?api=users").then(function(u){',
   '    var html = "<p><strong>Active now:</strong> "+(u.active|0)+" · <strong>Unique seen:</strong> "+(u.unique|0)+"</p>";',
@@ -2190,10 +2414,27 @@ var INLINE_JS = [
   '  }',
   '}',
   '',
+  '// Banners — sticky operator messages from the Banners sheet -------',
+  'function renderBanners() {',
+  '  fetchJson(BASE+"?api=banners").then(function(d){',
+  '    var strip = document.getElementById("banner-strip");',
+  '    if (!strip) return;',
+  '    var rows = (d && d.banners) || [];',
+  '    if (rows.length === 0) { strip.style.display = "none"; strip.innerHTML = ""; return; }',
+  '    strip.style.display = "block";',
+  '    var html = rows.map(function(r){',
+  '      return "<div class=\\"" + esc(r.severity) + "\\">" + esc(r.message) + "</div>";',
+  '    }).join("");',
+  '    strip.innerHTML = html;',
+  '  });',
+  '}',
+  '',
   '// Boot --------------------------------------------------------',
   'function boot() {',
   '  heartbeat();',
-  '  setInterval(heartbeat, 4 * 60 * 1000);',  // refresh every 4 min so 5-min idle window stays warm
+  '  setInterval(heartbeat, 4 * 60 * 1000);',
+  '  renderBanners();',
+  '  setInterval(renderBanners, 60 * 1000);',  // refresh every 4 min so 5-min idle window stays warm
   '  var path = window.location.search;',
   '  var isAdmin = /[?&](path|page)=admin/.test(path);',
   '  if (isAdmin) {',

@@ -93,6 +93,8 @@ whole context. Stale sources surface in the response's
 | `/exec?api=airnow&lat=&lon=` | JSON AirNow AQI (needs `AIRNOW_API_KEY`) |
 | `/exec?api=nwps&lat=&lon=` | JSON nearest river gauge + flood stages |
 | `/exec?api=heartbeat` (POST) | Logs an active-user heartbeat |
+| `/exec?api=sources` | Full source registry + per-source stale flag |
+| `/exec?api=banners` | Sticky operator messages from Banners sheet |
 
 ## Status definitions
 
@@ -162,7 +164,7 @@ Beyond the required `OWL_CONTACT`:
 | `DIGEST_RECIPIENTS` | 4-hourly status digest email (plain text, no LLM) |
 | `AIRNOW_API_KEY` | AQI lookups via `?api=airnow` |
 | `ASOS_STATIONS` | Override the built-in 30-station shortlist |
-| `ADMIN_EMAILS` | Reserved for admin-route gating (not enforced today) |
+| `ADMIN_EMAILS` | Comma-separated allow-list. Gates `/exec?path=admin` so only listed emails see the admin page. Requires the deployment to be **Execute as: User accessing the web app** + access scope **Anyone in your Workspace** so Apps Script exposes viewer email. |
 | `NCEI_MAINT_START` / `NCEI_MAINT_END` | Override the published maintenance window |
 
 ## What's NOT in this script
