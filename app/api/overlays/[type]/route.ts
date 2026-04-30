@@ -40,19 +40,19 @@ interface OverlayDef {
 // Use `outFields=*` + `f=geojson` for FeatureServer / MapServer layers.
 const OVERLAYS: Record<string, OverlayDef> = {
   // Active WWA polygons (warnings / watches / advisories) — operational hot.
-  // Filter to currently-active records via the EXPIRATION column the
-  // NWS WWA service exposes; cap at 500 features so the response
-  // stays under ~2 MB even on heavy-weather days. The full feature
-  // class is ~41 MB without filtering.
+  //
+  // No `where` filter: the eventdriven/WWA MapServer is intrinsically
+  // live (NWS retires expired alerts at the source — same layer that
+  // powers weather.gov). We previously sent `expiration>CURRENT_TIMESTAMP`
+  // which 400'd because `expiration` is `esriFieldTypeString`, not a
+  // date — string columns can't be compared to SQL timestamp functions.
+  //
+  // We tried geometryPrecision + maxAllowableOffset to shrink the
+  // ~45 MB response — upstream returns 400 on that param combo with
+  // this layer. resultRecordCount=500 caps the worst-case payload at
+  // ~2 MB during active severe-weather episodes.
   wwa: {
     url: "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer/1/query",
-    // Field is lowercase `expiration` in the layer schema; it's a
-    // datetime in the future for currently-active alerts. We tried
-    // adding geometryPrecision + maxAllowableOffset to shrink the
-    // ~45 MB response but the upstream returns 400 on that param
-    // combo with this layer — leaving raw and relying on the
-    // resultRecordCount cap (500) for size control.
-    whereClause: "expiration>CURRENT_TIMESTAMP",
     resultRecordCount: 500,
   },
   // World time zones (Esri Living Atlas) — already lightweight.

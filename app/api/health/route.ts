@@ -1,12 +1,36 @@
 /** GET /api/health — network-wide health snapshot.
  *  Compatible with the shape the HF Space emits so existing clients work.
+ *
+ *  Also exposes the build identifier so an operator (or a /loop in a
+ *  monitor) can see at a glance whether the running process matches
+ *  the latest commit on origin/main. We hit a torn-build incident
+ *  where the SSR'd HTML referenced static chunks that didn't exist on
+ *  disk; surfacing build_id makes that 30 s to diagnose instead of 5
+ *  min of staring at HTML source.
  */
 
 import { NextResponse } from "next/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getScan } from "@/lib/server/scan-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// Read .next/BUILD_ID and the puller-stamped GIT_SHA once at module
+// import. Next writes BUILD_ID to a stable path inside the build
+// output; if it's missing the build is torn and the process should be
+// restarted (puller does this on its next tick now). GIT_SHA is
+// stamped by the puller right after `git reset --hard` so /api/health
+// can prove which commit is actually running — no more guessing.
+let _buildId: string | null = null;
+let _gitSha: string | null = null;
+try {
+  _buildId = readFileSync(join(process.cwd(), ".next", "BUILD_ID"), "utf8").trim();
+} catch { /* torn build */ }
+try {
+  _gitSha = readFileSync(join(process.cwd(), ".next", "GIT_SHA"), "utf8").trim();
+} catch { /* puller hasn't stamped it yet */ }
 
 export async function GET() {
   // Non-blocking: returns cached (possibly stale) data immediately and
@@ -30,6 +54,8 @@ export async function GET() {
       last_error: "scan not yet initialised",
       data_stale: true,
       upstream_outage: false,
+      build_id: _buildId,
+      git_sha: _gitSha,
     });
   }
 
@@ -53,5 +79,7 @@ export async function GET() {
     last_error: null,
     data_stale: false,
     upstream_outage: false,
+    build_id: _buildId,
+    git_sha: _gitSha,
   });
 }

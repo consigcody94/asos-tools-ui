@@ -121,28 +121,60 @@ export async function POST(req: Request) {
       .join("\n");
 
   // Streaming path — first token in ~2-3s instead of waiting ~30s
-  // for the full generation. Uses Server-Sent Events with two event
-  // types: `delta` (a token chunk) and `done` (final metadata).
+  // for the full generation. Uses Server-Sent Events with three event
+  // types: `delta` (a content chunk), `thinking` (model reasoning,
+  // rendered dimmed) and `done` (final metadata).
+  //
+  // We track whether ANY content tokens arrived so we can detect a
+  // common GLM-5.1 failure mode: the model burns its entire token
+  // budget on reasoning and emits zero content. When that happens we
+  // synthesize a graceful "no content generated" delta so the modal
+  // never renders blank.
   if (stream) {
     const encoder = new TextEncoder();
     const sse = new ReadableStream({
       async start(controller) {
+        let contentTokens = 0;
+        let thinkingTokens = 0;
         try {
           for await (const chunk of chatStream(
             [
               { role: "system", content: sysPrompt },
               { role: "user", content: userMsg },
             ],
-            { maxTokens: 1200, reasoningEffort: "low" },
+            // 4000 tokens gives GLM-5.1 room for both its (verbose) chain
+            // of thought AND a 3-paragraph brief. At 1200 the model
+            // routinely exhausts the budget on reasoning alone and
+            // returns zero content tokens.
+            { maxTokens: 4000, reasoningEffort: "low" },
           )) {
             // chatStream prefixes reasoning chunks with __OWL_THINKING__
             // so we can fan them out to a separate SSE event the
             // client renders dimmed.
             const thinking = chunk.startsWith("__OWL_THINKING__");
             const text = thinking ? chunk.slice("__OWL_THINKING__".length) : chunk;
+            if (thinking) thinkingTokens += text.length;
+            else contentTokens += text.length;
             controller.enqueue(
               encoder.encode(
                 `event: ${thinking ? "thinking" : "delta"}\ndata: ${JSON.stringify({ text })}\n\n`,
+              ),
+            );
+          }
+          // Failure-mode rescue: if the upstream finished without ever
+          // emitting a content token, ship a synthetic delta so the
+          // modal has SOMETHING to display. This also gives the user
+          // enough information to retry intelligently.
+          if (contentTokens === 0) {
+            const fallback =
+              "AI Brief: the model produced reasoning but no final brief " +
+              "(common when it overflows its context budget on chain-of-thought). " +
+              `Reasoning length: ~${thinkingTokens} chars. ` +
+              "Click Regenerate to retry; if this keeps happening, lower the " +
+              "reasoning budget or switch models in /etc/owl.env.";
+            controller.enqueue(
+              encoder.encode(
+                `event: delta\ndata: ${JSON.stringify({ text: fallback })}\n\n`,
               ),
             );
           }
@@ -154,11 +186,15 @@ export async function POST(req: Request) {
             sigmets: sigmets.length,
             duration_ms: dt,
             mode: "stream",
+            content_tokens: contentTokens,
+            thinking_tokens: thinkingTokens,
           });
           controller.enqueue(
             encoder.encode(
               `event: done\ndata: ${JSON.stringify({
                 duration_ms: dt,
+                content_tokens: contentTokens,
+                thinking_tokens: thinkingTokens,
                 context: {
                   scan_row_count: scanRows.length,
                   sigmet_count: sigmets.length,

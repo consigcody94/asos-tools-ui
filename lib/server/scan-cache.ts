@@ -17,6 +17,8 @@
  *  callers never fire duplicate IEM requests.
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { scanNetwork, scanSummary } from "./iem";
 import { observeMs, setGauge } from "./metrics";
 import { redisGet, redisSet } from "./redis-cache";
@@ -41,13 +43,34 @@ const TTL_MS = 15 * 60 * 1000;
 const REDIS_KEY = "owl:scan:last";
 const REDIS_TTL = 24 * 3600;
 
+// Disk-backed fallback. Belt-and-suspenders to Redis: if the Redis
+// container restarts mid-day OR the key gets evicted under memory
+// pressure OR an operator runs FLUSHDB by accident, we still warm-
+// restore from this file on next process start. Path is chosen to
+// survive `rm -rf .next` (puller does this on every rebuild).
+//
+// Disk is the source of truth that the user asked for: "store at least
+// the last hour of data on site so when the site loads, sites aren't
+// grey." This file is updated after every successful scan (every 15
+// min) — far less than hourly granularity, but more importantly it's
+// readable by ANY process restart with zero external deps.
+const DISK_PATH = process.env.OWL_SCAN_DISK_PATH || "/opt/owl/data/scan-last.json";
+
 let _cache: ScanState | null = null;
 let _inflight: Promise<ScanState> | null = null;
 // `_lastKnown` is the per-station merge buffer: every scan updates only
 // the rows it reports, preserving last-known status for stations the
 // scan didn't return (e.g., AWC fallback returning a partial subset).
 const _lastKnown: Map<string, ScanRow> = new Map();
-let _lastKnownLoaded = false;
+// Memoized warm-restore promise. Was previously a boolean which
+// suffered a real race: the module-load `loadFromRedis()` would set
+// the flag to `true` synchronously, and a concurrent SSR call would
+// find the flag set and bail out without ever awaiting the actual
+// Redis read — shipping null to the page and painting all 918
+// stations grey for the duration of the next scan. Memoizing the
+// Promise itself fixes that: every caller awaits the same in-flight
+// load.
+let _restorePromise: Promise<void> | null = null;
 // Generation counter prevents an in-flight scan from overwriting a
 // post-flush cache: a scan kicked before the flush bumps the counter
 // will see its generation is stale and discard its result.
@@ -77,29 +100,66 @@ async function runScan(): Promise<ScanState> {
     scanned_at: new Date().toISOString(),
     duration_ms: duration,
   };
-  // Persist to Redis so a process restart warm-restores last-known.
-  // Non-blocking: never let a Redis hiccup fail the scan.
-  redisSet(REDIS_KEY, JSON.stringify(state), REDIS_TTL).catch(() => undefined);
+  // Persist to Redis AND to disk so a process restart warm-restores
+  // last-known regardless of which storage layer is healthy. Both
+  // writes are non-blocking — never let a persistence hiccup fail the
+  // scan itself.
+  const serialized = JSON.stringify(state);
+  redisSet(REDIS_KEY, serialized, REDIS_TTL).catch(() => undefined);
+  try {
+    mkdirSync(dirname(DISK_PATH), { recursive: true });
+    writeFileSync(DISK_PATH, serialized);
+  } catch (err) {
+    // Non-fatal: Redis is the primary persistence layer, disk is the
+    // belt-and-suspenders fallback for when Redis is wiped.
+    console.warn("[scan] disk persist failed:", (err as Error).message);
+  }
   return state;
 }
 
-async function loadFromRedis(): Promise<void> {
-  if (_lastKnownLoaded) return;
-  _lastKnownLoaded = true;
+async function doRestore(): Promise<void> {
+  // Try Redis first (faster, single-digit ms). Fall through to disk
+  // only if Redis returns nothing — operators occasionally wipe
+  // Redis but the disk file persists across that.
   try {
     const raw = await redisGet(REDIS_KEY);
-    if (!raw) return;
+    if (raw) {
+      const parsed = JSON.parse(raw) as ScanState;
+      if (Array.isArray(parsed.rows)) {
+        for (const r of parsed.rows) {
+          if (r.station) _lastKnown.set(r.station, r);
+        }
+        if (!_cache) _cache = parsed;
+        console.log(`[scan] warm-restored ${parsed.rows.length} stations from Redis`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn("[scan] redis warm-restore failed:", (err as Error).message);
+  }
+  // Disk fallback.
+  try {
+    const raw = readFileSync(DISK_PATH, "utf8");
     const parsed = JSON.parse(raw) as ScanState;
     if (Array.isArray(parsed.rows)) {
       for (const r of parsed.rows) {
         if (r.station) _lastKnown.set(r.station, r);
       }
       if (!_cache) _cache = parsed;
-      console.log(`[scan] warm-restored ${parsed.rows.length} stations from Redis`);
+      console.log(`[scan] warm-restored ${parsed.rows.length} stations from disk (${DISK_PATH})`);
     }
-  } catch (err) {
-    console.warn("[scan] redis warm-restore failed:", (err as Error).message);
+  } catch {
+    // Both layers cold — first run on a brand-new machine. The
+    // background scan will populate both layers shortly.
   }
+}
+
+function loadFromRedis(): Promise<void> {
+  // Memoize the in-flight promise: every concurrent caller awaits the
+  // SAME load instead of racing with a boolean flag.
+  if (_restorePromise) return _restorePromise;
+  _restorePromise = doRestore();
+  return _restorePromise;
 }
 
 function kickBackgroundRefresh(): void {

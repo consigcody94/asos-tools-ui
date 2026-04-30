@@ -30,15 +30,25 @@ else
   git fetch -q origin main
   LOCAL=$(git rev-parse HEAD)
   REMOTE=$(git rev-parse origin/main)
-  if [ "$LOCAL" = "$REMOTE" ]; then
-    exit 0
+  CHANGED=0
+  if [ "$LOCAL" != "$REMOTE" ]; then
+    git reset -q --hard origin/main
+    CHANGED=1
   fi
-  CHANGED=1
-  git reset -q --hard origin/main
+  # Self-heal a torn build. If .next/BUILD_ID is missing the static
+  # asset pipeline is incomplete (HTML SSRs but /_next/static/*.css
+  # 500s — exact failure mode we hit when owl.service was restarted
+  # mid-build). Re-build even without new commits.
+  if [ ! -f .next/BUILD_ID ]; then
+    echo "[puller] $(date -u +%FT%TZ) torn build detected (no BUILD_ID) — rebuilding"
+    CHANGED=1
+  fi
+  if [ "$CHANGED" = "0" ]; then exit 0; fi
 fi
 
 if [ "${CHANGED:-0}" = "1" ]; then
-  echo "[puller] $(date -u +%FT%TZ) building $(git rev-parse --short HEAD)"
+  SHA_SHORT=$(git rev-parse --short HEAD)
+  echo "[puller] $(date -u +%FT%TZ) building $SHA_SHORT"
   chown -R owl:owl /opt/owl
   # We don't use output:standalone (Next 16.2 + Turbopack emits it
   # incompletely). owl.service runs `next start` against the regular
@@ -49,8 +59,13 @@ if [ "${CHANGED:-0}" = "1" ]; then
   rm -rf .next
   runuser -u owl -- npm install --no-audit --no-fund >/var/log/owl-puller-npm.log 2>&1
   runuser -u owl -- npm run build  >>/var/log/owl-puller-npm.log 2>&1
+  # Stamp the deployed git SHA into the build so /api/health can
+  # report which commit is actually running. Eliminates the "is the
+  # latest deployed?" diagnosis loop entirely.
+  git rev-parse HEAD > .next/GIT_SHA 2>/dev/null || true
+  chown owl:owl .next/GIT_SHA 2>/dev/null || true
   systemctl restart owl
-  echo "[puller] $(date -u +%FT%TZ) deploy complete"
+  echo "[puller] $(date -u +%FT%TZ) deploy complete ($SHA_SHORT)"
 fi
 SH
 

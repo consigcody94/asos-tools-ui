@@ -90,6 +90,20 @@ export function AiBrief() {
       // If the stream closed without a `done` event, still record the
       // wall-clock duration so the operator gets useful feedback.
       if (lastEvent !== "done") setDuration(Math.round(performance.now() - t0));
+      // Final-blank rescue: if streaming ended with zero content tokens
+      // AND no error AND no thinking content, the upstream silently
+      // produced nothing. Show a clear failure message rather than a
+      // blank modal — this is what the user previously hit when GLM
+      // exhausted its budget on reasoning.
+      if (!acc && !thinkAcc) {
+        setErr("AI Brief: upstream returned no content. Click Regenerate to retry.");
+      } else if (!acc && thinkAcc) {
+        setErr(
+          "AI Brief: model reasoned for " +
+          Math.round(performance.now() - t0) / 1000 +
+          "s but produced no final brief. Click Regenerate to retry.",
+        );
+      }
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -166,7 +180,16 @@ export function AiBrief() {
 
             {err && (
               <div className="bg-noc-deep border-l-2 border-noc-crit p-3 text-noc-crit text-sm font-mono">
-                {err}
+                <div>{err}</div>
+                {!text && (
+                  <button
+                    onClick={generate}
+                    disabled={loading}
+                    className="noc-btn flex items-center gap-2 text-xs mt-3 disabled:opacity-50"
+                  >
+                    <Sparkles size={12} /> Retry
+                  </button>
+                )}
               </div>
             )}
 

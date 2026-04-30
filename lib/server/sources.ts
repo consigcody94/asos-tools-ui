@@ -3,6 +3,16 @@
  *
  *  ``rate_limit`` mirrors lib/server/fetcher.ts HOST_LIMITS so the
  *  public registry shows exactly what bucket our fetcher enforces.
+ *
+ *  ``wired`` is truth-in-advertising: are we ACTUALLY reading from
+ *  this source, or just listing it for context?
+ *    - "live"       : code calls this source on user requests
+ *    - "fallback"   : reserved as a backup if a primary fails (whether
+ *                     wired or not — see notes per entry)
+ *    - "documented" : listed for the operator's awareness, not yet
+ *                     wired into a route
+ *  The Admin tab uses this to render a green/dim status dot per
+ *  source so operators don't get a false sense of redundancy.
  */
 
 export interface Source {
@@ -15,6 +25,8 @@ export interface Source {
   notes: string;
   /** Published or empirical rate limit, as enforced by fetcher.ts. */
   rate_limit: string;
+  /** Truth-in-advertising flag — see file header. */
+  wired: "live" | "fallback" | "documented";
 }
 
 export const SOURCES: Source[] = [
@@ -25,6 +37,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "near real-time", trust: "mirror",
     rate_limit: "1 request / 5s; 10 min cooldown on IEM slow-down responses",
     notes: "Academic mirror of NCEI/NOAA archives. IP-based rate limit; OWL uses large batches and stale-cache fallback.",
+    wired: "live",
   },
   {
     name: "NOAA NCEI Access Services",
@@ -32,7 +45,8 @@ export const SOURCES: Source[] = [
     used_for: "Fallback when IEM is unavailable",
     auth: "none", cadence: "hourly", trust: "agency",
     rate_limit: "5 req/s (safe default)",
-    notes: "Authoritative NCEI archive. Slower than IEM.",
+    notes: "Authoritative NCEI archive. Slower than IEM. (Documented fallback — not yet wired into the scan path.)",
+    wired: "fallback",
   },
   {
     name: "NOAA NCEI Climate Data Online",
@@ -41,6 +55,7 @@ export const SOURCES: Source[] = [
     auth: "free token", cadence: "archive", trust: "agency",
     rate_limit: "5 req/s + 10,000 req/day per token (documented)",
     notes: "Keyed report lane; configure NCEI_CDO_TOKEN before live use.",
+    wired: "documented",
   },
   {
     name: "NWS api.weather.gov",
@@ -49,6 +64,7 @@ export const SOURCES: Source[] = [
     auth: "UA header required", cadence: "real-time", trust: "agency",
     rate_limit: "2 req/s conservative; official numeric limit is unpublished",
     notes: "Public API; User-Agent required; cache-friendly responses.",
+    wired: "live",
   },
   {
     name: "Aviation Weather Center (AWC)",
@@ -56,7 +72,8 @@ export const SOURCES: Source[] = [
     used_for: "METAR / TAF / SIGMET / AIRMET / PIREP / AFD",
     auth: "none", cadence: "real-time", trust: "agency",
     rate_limit: "2 req/s (conservative — no published limit)",
-    notes: "FAA-supported public API.",
+    notes: "FAA-supported public API. SIGMET feed cached 5 min in-process.",
+    wired: "live",
   },
   {
     name: "NWS RIDGE NEXRAD",
@@ -65,6 +82,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "5 min", trust: "agency",
     rate_limit: "10 req/s (CDN, client-loaded images)",
     notes: "159 sites; nearest-neighbor pick; CONUS composite fallback.",
+    wired: "live",
   },
   {
     name: "NESDIS GOES-19 East",
@@ -73,6 +91,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "5 min (CONUS), 1 min (MESO)", trust: "agency",
     rate_limit: "10 req/s (CDN, client-loaded images)",
     notes: "Pre-rendered animated GIF loops per sector.",
+    wired: "live",
   },
   {
     name: "NESDIS GOES-18 West",
@@ -81,6 +100,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "5 min", trust: "agency",
     rate_limit: "10 req/s (CDN, client-loaded images)",
     notes: "Alaska sector ships at 1000x1000; HI/PNW/PSW at 600x600.",
+    wired: "live",
   },
   {
     name: "USGS Earthquake Hazards",
@@ -89,6 +109,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "~1 min", trust: "agency",
     rate_limit: "5 req/s (reasonable use policy)",
     notes: "CC0 data. Feeds: all_hour, 2.5_day, significant_week.",
+    wired: "live",
   },
   {
     name: "NOAA NHC CurrentStorms",
@@ -97,6 +118,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "as advisories issue", trust: "agency",
     rate_limit: "1 req/s (static JSON, polite default)",
     notes: "Empty in off-season.",
+    wired: "live",
   },
   {
     name: "NOAA NDBC buoys",
@@ -104,7 +126,8 @@ export const SOURCES: Source[] = [
     used_for: "Marine met obs — coastal ASOS cross-check",
     auth: "none", cadence: "10–30 min per station", trust: "agency",
     rate_limit: "1 req/s per station",
-    notes: "402 met-enabled buoys bundled in-repo.",
+    notes: "402 met-enabled buoys bundled in-repo. Status feed comes from latest_obs.txt.",
+    wired: "live",
   },
   {
     name: "NOAA CO-OPS Data + Metadata APIs",
@@ -113,6 +136,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "latest to 1 min", trust: "agency",
     rate_limit: "1 req/s sustained (safe default; station metadata cached 6h)",
     notes: "NOS NWLON/PORTS correlation for coastal ASOS investigations.",
+    wired: "live",
   },
   {
     name: "FAA WeatherCams",
@@ -121,6 +145,7 @@ export const SOURCES: Source[] = [
     auth: "browser headers", cadence: "10 min", trust: "agency",
     rate_limit: "10 req/s (CDN-safe)",
     notes: "Public imagery API; 260 FAA + ~530 hosted sites.",
+    wired: "live",
   },
   {
     name: "NOAA SWPC",
@@ -129,6 +154,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "1–3 min", trust: "agency",
     rate_limit: "1 req / 60 s per feed (SWPC's documented ceiling)",
     notes: "Space Weather Prediction Center product line.",
+    wired: "live",
   },
   {
     name: "FAA NOTAM API",
@@ -137,7 +163,8 @@ export const SOURCES: Source[] = [
     auth: "client_id + client_secret (FAA_NOTAM_CLIENT_ID / _SECRET)",
     cadence: "real-time", trust: "agency",
     rate_limit: "5 req/s per client (documented)",
-    notes: "Optional; free FAA developer account required.",
+    notes: "Optional; free FAA developer account required. Wired only when both env vars are set.",
+    wired: "fallback",
   },
   {
     name: "NOAA NWPS",
@@ -146,6 +173,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "real-time + forecast", trust: "agency",
     rate_limit: "1 req/s (safe default)",
     notes: "Ready next for hydrology/flood proximity around inland ASOS sites.",
+    wired: "documented",
   },
   {
     name: "NOAA NOMADS",
@@ -154,6 +182,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "hourly to 6-hourly", trust: "agency",
     rate_limit: "0.5 req/s (large-file safe default)",
     notes: "Use point/subset manifests first; defer GRIB decoding to worker service.",
+    wired: "documented",
   },
   {
     name: "NOAA MRMS",
@@ -162,6 +191,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "real-time", trust: "agency",
     rate_limit: "0.5 req/s (large-file safe default)",
     notes: "Operational GRIB2 products from NCEP HTTP; report manifests before rendered products.",
+    wired: "documented",
   },
   {
     name: "NOAA NEXRAD on NODD",
@@ -170,6 +200,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "as scans arrive", trust: "agency",
     rate_limit: "n/a (public cloud object storage; use no-sign requests)",
     notes: "Current buckets: unidata-nexrad-level2, unidata-nexrad-level2-chunks, unidata-nexrad-level3.",
+    wired: "documented",
   },
   {
     name: "NOAA GOES-R on NODD",
@@ -178,6 +209,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "as products arrive", trust: "agency",
     rate_limit: "n/a (public cloud object storage)",
     notes: "Complements STAR CDN loops with raw product provenance.",
+    wired: "documented",
   },
   {
     name: "NWS OGC / ArcGIS map services",
@@ -185,7 +217,8 @@ export const SOURCES: Source[] = [
     used_for: "Radar mosaics, local storm reports, watches/warnings, QPE and map overlays",
     auth: "none", cadence: "time-enabled near real-time", trust: "agency",
     rate_limit: "2 req/s (safe default)",
-    notes: "Ready for evidence-map overlays and station drill geospatial layers.",
+    notes: "Active WWA polygons live on this host; powers /api/overlays/wwa.",
+    wired: "live",
   },
   {
     name: "NOAA nowCOAST",
@@ -194,6 +227,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "near real-time", trust: "agency",
     rate_limit: "2 req/s (safe default)",
     notes: "Ready for coastal ASOS mode and integrated evidence maps.",
+    wired: "documented",
   },
   {
     name: "NOAA MADIS",
@@ -202,6 +236,7 @@ export const SOURCES: Source[] = [
     auth: "public/guest + restricted tiers", cadence: "real-time + archive", trust: "agency",
     rate_limit: "0.5 req/s (safe default)",
     notes: "Research lane; use public surface dumps first, restricted feeds only if configured.",
+    wired: "documented",
   },
   {
     name: "NASA GIBS / Worldview",
@@ -210,6 +245,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "daily", trust: "agency",
     rate_limit: "no published limit (CDN-served)",
     notes: "WMTS tiles + GetSnapshot bbox renderer; deep-link to Worldview viewer.",
+    wired: "documented",
   },
   {
     name: "NASA EONET",
@@ -218,6 +254,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "near real-time", trust: "agency",
     rate_limit: "1 req/s sustained (safe default)",
     notes: "Open events include wildfires, severe storms, volcanoes, sea/lake ice, floods, dust, and related hazards.",
+    wired: "live",
   },
   {
     name: "CelesTrak GP orbital elements",
@@ -226,6 +263,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "updated multiple times daily", trust: "aggregator",
     rate_limit: "1 req/s sustained, cached 2h",
     notes: "Public GP/TLE data propagated with SGP4 via satellite.js. Imagery links route to mission/product pages where public instrument data exists.",
+    wired: "live",
   },
   {
     name: "Element84 Earth-Search STAC",
@@ -234,6 +272,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "as scenes ingest", trust: "aggregator",
     rate_limit: "no published limit",
     notes: "Public STAC catalog; cloud-cover filter applied at query time.",
+    wired: "documented",
   },
   {
     name: "Copernicus Data Space Ecosystem",
@@ -243,6 +282,7 @@ export const SOURCES: Source[] = [
     cadence: "as scenes ingest", trust: "agency",
     rate_limit: "n/a (deep-link)",
     notes: "EU equivalent of NASA Worldview for Sentinel data.",
+    wired: "documented",
   },
   {
     name: "USGS Landsat Look + Earth Explorer",
@@ -251,6 +291,7 @@ export const SOURCES: Source[] = [
     auth: "none for browser", cadence: "16-day repeat", trust: "agency",
     rate_limit: "n/a (deep-link)",
     notes: "STAC API also exposed at landsatlook.usgs.gov/stac-server.",
+    wired: "documented",
   },
   {
     name: "Sentinel Hub EO Browser",
@@ -260,6 +301,7 @@ export const SOURCES: Source[] = [
     trust: "aggregator",
     rate_limit: "n/a (deep-link)",
     notes: "Free tier covers viewing; programmatic API requires API key.",
+    wired: "documented",
   },
   {
     name: "Zoom Earth",
@@ -268,6 +310,7 @@ export const SOURCES: Source[] = [
     auth: "none", cadence: "real-time", trust: "aggregator",
     rate_limit: "n/a (deep-link)",
     notes: "GOES + EUMETSAT + Himawari blended; no public API.",
+    wired: "documented",
   },
   {
     name: "EOSDA LandViewer",
@@ -277,5 +320,6 @@ export const SOURCES: Source[] = [
     trust: "aggregator",
     rate_limit: "n/a (deep-link)",
     notes: "Aggregates Sentinel + Landsat + commercial sources; deep-link only.",
+    wired: "documented",
   },
 ];
