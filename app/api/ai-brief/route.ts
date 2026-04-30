@@ -1,136 +1,305 @@
 /** POST /api/ai-brief
  *
- *  Generates a NOC shift-change briefing from the live scan + active
- *  hazards.  Powered by Azure OpenAI gpt-5-mini.  Pulls fresh context
- *  from the OWL backend and AWC right before generation, so the brief
- *  reflects the actual state at request time.
+ *  Generates a structured NOC shift-change briefing from the full live
+ *  operating picture: ASOS scan + CAP alerts + SIGMETs + G-AIRMETs +
+ *  CWAs + NHC tropical storms + Tsunami bulletins + NIFC wildfires +
+ *  NCEP SDM admin messages + NCEI maintenance state.
  *
- *  Body shape (optional): {focus?: string} — narrow to a region, e.g.
- *  "northeast US" or "Hawaii".
+ *  Body params (all optional):
+ *    focus       — region tag ("northeast", "southeast", "west",
+ *                  "hawaii", "alaska", or arbitrary free text passed
+ *                  to the model). Default: full network.
+ *    audience    — "noc" (default) | "field-tech" | "management" |
+ *                  "aviation" — adjusts technical depth.
+ *    horizon     — "now" (default) | "6h" | "24h" — prediction window.
+ *    length      — "summary" | "standard" (default) | "detailed".
+ *    compareToLast — boolean (default true) — include delta vs the
+ *                    most-recent prior brief in this process.
+ *    stream      — boolean — Server-Sent Events streaming.
+ *
+ *  Response: structured prose with consistent section ordering so
+ *  operators can scan in 5 seconds. Sections:
+ *    EXECUTIVE SUMMARY  · NETWORK HEALTH  · URGENT — STATIONS UNDER
+ *    ACTIVE WEATHER  · INTERMITTENT (FLAPPING)  · TOP PROBLEM
+ *    STATIONS  · AVIATION HAZARDS  · ACTIVE ALERTS  · TROPICAL ·
+ *    WILDFIRES & TSUNAMI · DELTA SINCE LAST BRIEF · DATA FRESHNESS ·
+ *    TICKETS TO OPEN
+ *
+ *  Powered by GPT-5 mini (Azure OpenAI / Ollama Cloud / OpenAI). Streaming
+ *  delivers first token in ~2-3s vs ~30s for the full generation.
  */
 
 import { NextResponse } from "next/server";
 import { chat, chatStream } from "@/lib/openai";
-import { getScan, getScanReady } from "@/lib/server/scan-cache";
-import { fetchAirSigmet } from "@/lib/server/awc";
+import {
+  buildAiBriefContext,
+  computeBriefDelta,
+  type AiBriefContext,
+  type BriefDelta,
+} from "@/lib/server/ai-brief-context";
 import { trackEvent, trackMetric } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface ScanRow {
-  station: string;
-  status?: string;
-  minutes_since_last_report?: number | null;
-  probable_reason?: string | null;
+type Audience = "noc" | "field-tech" | "management" | "aviation";
+type Horizon = "now" | "6h" | "24h";
+type Length = "summary" | "standard" | "detailed";
+
+interface BriefBody {
+  focus?: string;
+  audience?: Audience;
+  horizon?: Horizon;
+  length?: Length;
+  compareToLast?: boolean;
+  stream?: boolean;
 }
 
-interface AirSigmet {
-  hazard?: string;
-  airSigmetType?: string;
-  rawAirSigmet?: string;
-  validTimeFrom?: string;
-  validTimeTo?: string;
+// ---- System prompt builder ------------------------------------------------
+//
+// Centralised so streaming + non-streaming paths share the exact same
+// instructions. Every section is named so the LLM produces a stable
+// document shape across runs.
+
+function buildSystemPrompt(audience: Audience, horizon: Horizon, length: Length): string {
+  const audienceGuide: Record<Audience, string> = {
+    noc:
+      "You are an ASOS Network Operations Center (NOC) shift briefer. " +
+      "Audience: 24/7 ops engineers triaging the ASOS network. They " +
+      "expect ICAO codes verbatim, terse operational language, and " +
+      "specific action items. No marketing language.",
+    "field-tech":
+      "You are an ASOS field-maintenance dispatch briefer. Audience: " +
+      "regional field technicians who own physical site repairs. " +
+      "Emphasize sensor codes (PWINO, FZRANO, RVRNO etc.), priority " +
+      "ranking by impact + accessibility, and ticket-ready summaries.",
+    management:
+      "You are an ASOS Network executive summary writer. Audience: " +
+      "non-technical management who need to understand network posture " +
+      "without aviation jargon. Translate ICAO IDs to airport names " +
+      "and convert technical issues to operational impact.",
+    aviation:
+      "You are an aviation weather briefer. Audience: airline dispatch " +
+      "and air traffic flow management. Emphasize SIGMETs, G-AIRMETs, " +
+      "CWAs, and the airports (by ICAO) where station outages affect " +
+      "flight ops. Skip non-aviation hazards.",
+  };
+
+  const horizonGuide: Record<Horizon, string> = {
+    now: "Time horizon: current state. Describe what is happening now.",
+    "6h":
+      "Time horizon: next 6 hours. Project trajectory based on current " +
+      "patterns — which stations are likely to escalate, which hazards are " +
+      "likely to clear, what should be watched.",
+    "24h":
+      "Time horizon: next 24 hours. Identify systemic risks (incoming " +
+      "tropical activity, sustained drought-fire-wind alignment, multi-day " +
+      "outages worth scheduling field response).",
+  };
+
+  const lengthGuide: Record<Length, string> = {
+    summary:
+      "Length: 4-6 sentences total. Hit only the most-critical items. " +
+      "Skip empty sections entirely.",
+    standard:
+      "Length: 1-2 paragraphs per section, only including sections with " +
+      "non-trivial data. Skip empty sections.",
+    detailed:
+      "Length: full structured brief, all sections present even when " +
+      "empty (note 'no active items' in those). 3-4 sentences per section.",
+  };
+
+  return [
+    "Respond in English only. Do not switch languages.",
+    "",
+    audienceGuide[audience],
+    "",
+    horizonGuide[horizon],
+    "",
+    lengthGuide[length],
+    "",
+    "ALWAYS use the exact section headers below as bold or all-caps. ",
+    "Order: EXECUTIVE SUMMARY · NETWORK HEALTH · URGENT (STATIONS UNDER ACTIVE WEATHER) · ",
+    "INTERMITTENT (FLAPPING) · TOP PROBLEM STATIONS · AVIATION HAZARDS · ACTIVE ALERTS · ",
+    "TROPICAL · WILDFIRES & TSUNAMI · DELTA SINCE LAST BRIEF · DATA FRESHNESS · TICKETS TO OPEN.",
+    "",
+    "RULES:",
+    "- Use ICAO IDs verbatim. Don't translate to airport names unless audience=management.",
+    "- For each cited station, include a one-clause reason: \"KSEA INTERMITTENT (3-hour comm gap, just recovered)\".",
+    "- Never invent data not present in the context.",
+    "- Caveat data freshness using the stale_sources array verbatim.",
+    "- Section TICKETS TO OPEN: each line is a single actionable ticket — \"Field tech: investigate PWINO at KAVL\" etc.",
+    "- Skip a section ENTIRELY when length=summary or standard and that section has no data.",
+  ].join("\n");
 }
+
+// ---- Context → user-message JSON ------------------------------------------
+
+function buildUserMessage(
+  ctx: AiBriefContext,
+  delta: BriefDelta | null,
+  body: BriefBody,
+): string {
+  const blocks: string[] = [];
+
+  blocks.push(
+    `META: built_at=${ctx.built_at}, scan_age_min=${ctx.scan_freshness.minutes_old ?? "?"}, ` +
+      `total_stations=${ctx.total_stations}, focus=${body.focus ?? "all"}, ` +
+      `audience=${body.audience ?? "noc"}, horizon=${body.horizon ?? "now"}, ` +
+      `length=${body.length ?? "standard"}.`,
+  );
+  blocks.push(`STATUS_COUNTS: ${JSON.stringify(ctx.status_counts)}`);
+
+  if (ctx.top_problems.length > 0) {
+    blocks.push("TOP_PROBLEM_STATIONS:");
+    for (const p of ctx.top_problems) {
+      blocks.push(
+        `  ${p.station} ${p.status} ${p.minutes_since_last_report ?? "?"}min ` +
+          (p.inside_active_alert ? `[URGENT: ${p.overlapping_alerts.join(",")}] ` : "") +
+          `${p.probable_reason ?? ""}`,
+      );
+    }
+  }
+
+  if (ctx.intermittent_stations.length > 0) {
+    blocks.push(
+      "INTERMITTENT_STATIONS (SUAD-spec — flapping pattern, 3+ MISSING " +
+        "metars then recovery):",
+    );
+    for (const r of ctx.intermittent_stations) {
+      blocks.push(
+        `  ${r.station} log=[${r.state_log_summary}] last=${r.minutes_since_last_report ?? "?"}min`,
+      );
+    }
+  }
+
+  // Long-missing alert — > 2 weeks silent. Every entry must appear in
+  // the brief; no slicing. The model should call out each one in the
+  // "URGENT" section with explicit duration so field dispatch can
+  // route response.
+  if (ctx.long_missing_alert.length > 0) {
+    blocks.push(
+      `LONG_MISSING_ALERT (silent > 14 days — every entry MUST appear in URGENT section):`,
+    );
+    for (const r of ctx.long_missing_alert) {
+      blocks.push(
+        `  ${r.station} ${r.state ?? ""} silent=${r.silence_human} last_valid=${r.last_valid ?? "?"} ${r.probable_reason ?? ""}`,
+      );
+    }
+  }
+
+  if (ctx.cap_alerts.total > 0) {
+    blocks.push(
+      `ACTIVE_ALERTS: ${ctx.cap_alerts.total} total · by event:\n` +
+        ctx.cap_alerts.by_event
+          .map((e) => `  ${e.event} (${e.severity}): ${e.count}`)
+          .join("\n"),
+    );
+    if (ctx.cap_alerts.sample.length > 0) {
+      blocks.push(
+        "ALERT_SAMPLES:\n" +
+          ctx.cap_alerts.sample
+            .map((a) => `  ${a.event} (${a.severity}): ${a.headline}`)
+            .join("\n"),
+      );
+    }
+  }
+
+  if (ctx.aviation.sigmet_count + ctx.aviation.gairmet_count + ctx.aviation.cwa_count > 0) {
+    blocks.push(
+      `AVIATION_HAZARDS: ${ctx.aviation.sigmet_count} SIGMETs · ` +
+        `${ctx.aviation.gairmet_count} G-AIRMETs · ${ctx.aviation.cwa_count} CWAs`,
+    );
+    if (ctx.aviation.sigmet_by_hazard.length > 0) {
+      blocks.push(
+        "  by hazard: " +
+          ctx.aviation.sigmet_by_hazard
+            .map((h) => `${h.hazard}=${h.count}`)
+            .join(", "),
+      );
+    }
+  }
+
+  if (ctx.tropical_storms.length > 0) {
+    blocks.push("TROPICAL_STORMS:");
+    for (const s of ctx.tropical_storms) {
+      blocks.push(
+        `  ${s.name} ${s.classification} ${s.intensity_kt}kt ${s.pressure_mb}mb ${s.movement}`,
+      );
+    }
+  }
+
+  if (ctx.tsunami.length > 0) {
+    blocks.push("TSUNAMI_BULLETINS:");
+    for (const t of ctx.tsunami) {
+      blocks.push(`  ${t.center} ${t.level.toUpperCase()}: ${t.title}`);
+    }
+  }
+
+  if (ctx.wildfires.length > 0) {
+    blocks.push("WILDFIRES (top 8 by acreage):");
+    for (const f of ctx.wildfires) {
+      blocks.push(
+        `  ${f.name} ${f.state} acres=${f.acres ?? "?"} containment=${f.containment_pct ?? "?"}% ${f.status ?? ""}`,
+      );
+    }
+  }
+
+  if (ctx.admin_message) {
+    blocks.push(
+      `NCEP_SDM_ADMIN: issued=${ctx.admin_message.issued}\n  ${ctx.admin_message.preview}`,
+    );
+  }
+
+  if (ctx.ncei_maintenance.active) {
+    blocks.push(`NCEI_MAINTENANCE_ACTIVE: ${ctx.ncei_maintenance.message}`);
+  }
+
+  if (delta) {
+    const dStr = Object.entries(delta.count_delta)
+      .filter(([, v]) => v !== 0)
+      .map(([k, v]) => `${k}${v > 0 ? "+" : ""}${v}`)
+      .join(", ");
+    blocks.push(
+      `DELTA_SINCE_LAST: ` +
+        `newly_problem=[${delta.newly_problem.slice(0, 12).join(",")}] ` +
+        `recovered=[${delta.recovered.slice(0, 12).join(",")}] ` +
+        `count_changes={${dStr}}`,
+    );
+  }
+
+  if (ctx.stale_sources.length > 0) {
+    blocks.push(`STALE_SOURCES: ${ctx.stale_sources.join(", ")}`);
+  }
+
+  return blocks.join("\n\n");
+}
+
+// ---- Route handler --------------------------------------------------------
 
 export async function POST(req: Request) {
   const t0 = Date.now();
-  let focus: string | undefined;
-  let stream = false;
+  let body: BriefBody = {};
   try {
-    const body = (await req.json().catch(() => ({}))) as { focus?: string; stream?: boolean };
-    focus = body.focus;
-    stream = !!body.stream;
+    body = (await req.json().catch(() => ({}))) as BriefBody;
   } catch { /* empty body OK */ }
-  // Also honor ?stream=1 in the query string for easy curl tests.
-  if (!stream) {
-    const u = new URL(req.url);
-    if (u.searchParams.get("stream") === "1") stream = true;
-  }
+  const u = new URL(req.url);
+  if (u.searchParams.get("stream") === "1") body.stream = true;
 
-  // Pull live context. Use the *cached* scan — getScanFresh() blocks
-  // on a network fetch that can take 60+ seconds when IEM is in
-  // rate-limit cooldown, which made the AI Brief button appear hung.
-  // The scan cache is warm-restored at boot and refreshed every 15
-  // min in the background; that's plenty fresh for a shift brief.
-  await getScanReady().catch(() => null);
-  const [scan, sigmetsRaw] = await Promise.all([
-    Promise.resolve(getScan()),
-    fetchAirSigmet().catch(() => [] as Array<Record<string, unknown>>),
-  ]);
-  const scanRows: ScanRow[] = (scan?.rows as unknown as ScanRow[]) || [];
-  const sigmets: AirSigmet[] = sigmetsRaw.map((s) => ({
-    hazard:         (s.hazard as string | undefined),
-    airSigmetType:  (s.airSigmetType as string | undefined),
-    rawAirSigmet:   (s.rawAirSigmet as string | undefined),
-    validTimeFrom:  (s.validTimeFrom as string | undefined),
-    validTimeTo:    (s.validTimeTo as string | undefined),
-  }));
+  const audience: Audience = body.audience ?? "noc";
+  const horizon: Horizon = body.horizon ?? "now";
+  const length: Length = body.length ?? "standard";
+  const compareToLast = body.compareToLast !== false;
 
-  // Tally per-status counts.
-  const counts: Record<string, number> = {};
-  for (const r of scanRows) {
-    const s = (r.status || "NO DATA").toUpperCase();
-    counts[s] = (counts[s] || 0) + 1;
-  }
+  const ctx = await buildAiBriefContext(body.focus);
+  const delta = compareToLast ? computeBriefDelta(ctx) : null;
 
-  // Top problem stations (worst-first).
-  const order = ["MISSING", "FLAGGED", "INTERMITTENT"];
-  const topProblems = scanRows
-    .filter((r) => order.includes((r.status || "").toUpperCase()))
-    .sort((a, b) => {
-      const oa = order.indexOf((a.status || "").toUpperCase());
-      const ob = order.indexOf((b.status || "").toUpperCase());
-      if (oa !== ob) return oa - ob;
-      return (a.minutes_since_last_report ?? 1e9) - (b.minutes_since_last_report ?? 1e9);
-    })
-    .slice(0, 25);
+  const sysPrompt = buildSystemPrompt(audience, horizon, length);
+  const userMsg = buildUserMessage(ctx, delta, body);
 
-  // Hazard summary.
-  const hazardCounts = new Map<string, number>();
-  for (const h of sigmets) {
-    const k = h.hazard || "OTHER";
-    hazardCounts.set(k, (hazardCounts.get(k) || 0) + 1);
-  }
-
-  const sysPrompt =
-    "Respond in English only. Do not use Chinese, Spanish, or any other " +
-    "language regardless of the model's defaults.\n\n" +
-    "You are an ASOS network operations briefer for the NOAA / FAA Automated " +
-    "Surface Observing System. Write a concise NOC shift-change briefing " +
-    "in exactly 3 short English paragraphs:\n" +
-    "  1. NETWORK HEALTH (one paragraph): overall posture from the status counts.\n" +
-    "  2. STATIONS NEEDING ATTENTION (one paragraph): cite the top 5 worst by ICAO with the probable_reason.\n" +
-    "  3. AVIATION HAZARDS (one paragraph): summarise the active SIGMETs/AIRMETs by hazard type and urgency.\n" +
-    "Be precise and operational. Use ICAO IDs verbatim. No marketing language. " +
-    "Reference data freshness if it's stale. Output in English.";
-
-  const userMsg =
-    `Region focus: ${focus || "all (CONUS + AK + HI + PR/USVI)"}.\n\n` +
-    `STATUS COUNTS:\n${JSON.stringify(counts)}\n\n` +
-    `TOP PROBLEM STATIONS (worst first):\n` +
-    topProblems
-      .map(
-        (r) =>
-          `  ${r.station} ${r.status} ${r.minutes_since_last_report ?? "?"}min ${r.probable_reason || ""}`,
-      )
-      .join("\n") + "\n\n" +
-    `ACTIVE HAZARDS (${sigmets.length}):\n` +
-    Array.from(hazardCounts.entries())
-      .map(([h, n]) => `  ${h}: ${n}`)
-      .join("\n");
-
-  // Streaming path — first token in ~2-3s instead of waiting ~30s
-  // for the full generation. Uses Server-Sent Events with three event
-  // types: `delta` (a content chunk), `thinking` (model reasoning,
-  // rendered dimmed) and `done` (final metadata).
-  //
-  // We track whether ANY content tokens arrived so we can detect a
-  // common GLM-5.1 failure mode: the model burns its entire token
-  // budget on reasoning and emits zero content. When that happens we
-  // synthesize a graceful "no content generated" delta so the modal
-  // never renders blank.
-  if (stream) {
+  // Streaming path — first token in ~2-3s. Same SSE events as before
+  // (delta / thinking / done) so existing client code continues working.
+  if (body.stream) {
     const encoder = new TextEncoder();
     const sse = new ReadableStream({
       async start(controller) {
@@ -142,15 +311,11 @@ export async function POST(req: Request) {
               { role: "system", content: sysPrompt },
               { role: "user", content: userMsg },
             ],
-            // 4000 tokens gives GLM-5.1 room for both its (verbose) chain
-            // of thought AND a 3-paragraph brief. At 1200 the model
-            // routinely exhausts the budget on reasoning alone and
-            // returns zero content tokens.
-            { maxTokens: 4000, reasoningEffort: "low" },
+            // 6000 tokens — bigger budget for the structured brief.
+            // GLM-5.1 still has reasoning overhead; 6k gives both reasoning
+            // and 12-section brief room to breathe.
+            { maxTokens: 6000, reasoningEffort: "low" },
           )) {
-            // chatStream prefixes reasoning chunks with __OWL_THINKING__
-            // so we can fan them out to a separate SSE event the
-            // client renders dimmed.
             const thinking = chunk.startsWith("__OWL_THINKING__");
             const text = thinking ? chunk.slice("__OWL_THINKING__".length) : chunk;
             if (thinking) thinkingTokens += text.length;
@@ -161,10 +326,6 @@ export async function POST(req: Request) {
               ),
             );
           }
-          // Failure-mode rescue: if the upstream finished without ever
-          // emitting a content token, ship a synthetic delta so the
-          // modal has SOMETHING to display. This also gives the user
-          // enough information to retry intelligently.
           if (contentTokens === 0) {
             const fallback =
               "AI Brief: the model produced reasoning but no final brief " +
@@ -173,21 +334,22 @@ export async function POST(req: Request) {
               "Click Regenerate to retry; if this keeps happening, lower the " +
               "reasoning budget or switch models in /etc/owl.env.";
             controller.enqueue(
-              encoder.encode(
-                `event: delta\ndata: ${JSON.stringify({ text: fallback })}\n\n`,
-              ),
+              encoder.encode(`event: delta\ndata: ${JSON.stringify({ text: fallback })}\n\n`),
             );
           }
           const dt = Date.now() - t0;
           trackMetric("owl.ai_brief.duration_ms", dt);
           trackEvent("owl.ai_brief.generated", {
-            focus: focus || "all",
-            scan_rows: scanRows.length,
-            sigmets: sigmets.length,
+            focus: body.focus || "all",
+            audience, horizon, length,
+            scan_rows: ctx.total_stations,
+            sigmet_count: ctx.aviation.sigmet_count,
+            cap_count: ctx.cap_alerts.total,
             duration_ms: dt,
             mode: "stream",
             content_tokens: contentTokens,
             thinking_tokens: thinkingTokens,
+            stale_sources: ctx.stale_sources.length,
           });
           controller.enqueue(
             encoder.encode(
@@ -196,9 +358,15 @@ export async function POST(req: Request) {
                 content_tokens: contentTokens,
                 thinking_tokens: thinkingTokens,
                 context: {
-                  scan_row_count: scanRows.length,
-                  sigmet_count: sigmets.length,
-                  counts,
+                  total_stations: ctx.total_stations,
+                  status_counts: ctx.status_counts,
+                  cap_count: ctx.cap_alerts.total,
+                  sigmet_count: ctx.aviation.sigmet_count,
+                  tropical_count: ctx.tropical_storms.length,
+                  tsunami_count: ctx.tsunami.length,
+                  fires_count: ctx.wildfires.length,
+                  stale_sources: ctx.stale_sources,
+                  has_delta: delta != null,
                 },
               })}\n\n`,
             ),
@@ -227,26 +395,36 @@ export async function POST(req: Request) {
       { role: "system", content: sysPrompt },
       { role: "user", content: userMsg },
     ],
-    { maxTokens: 1200, reasoningEffort: "low" },
+    { maxTokens: 6000, reasoningEffort: "low" },
   );
 
   const dt = Date.now() - t0;
   trackMetric("owl.ai_brief.duration_ms", dt);
   trackEvent("owl.ai_brief.generated", {
-    focus: focus || "all",
-    scan_rows: scanRows.length,
-    sigmets: sigmets.length,
+    focus: body.focus || "all",
+    audience, horizon, length,
+    scan_rows: ctx.total_stations,
+    sigmet_count: ctx.aviation.sigmet_count,
+    cap_count: ctx.cap_alerts.total,
     duration_ms: dt,
+    stale_sources: ctx.stale_sources.length,
   });
 
   return NextResponse.json({
     ok: true,
     text,
     context: {
-      scan_row_count: scanRows.length,
-      sigmet_count: sigmets.length,
-      counts,
+      total_stations: ctx.total_stations,
+      status_counts: ctx.status_counts,
+      cap_count: ctx.cap_alerts.total,
+      sigmet_count: ctx.aviation.sigmet_count,
+      tropical_count: ctx.tropical_storms.length,
+      tsunami_count: ctx.tsunami.length,
+      fires_count: ctx.wildfires.length,
+      stale_sources: ctx.stale_sources,
+      has_delta: delta != null,
     },
+    delta,
     duration_ms: dt,
   });
 }
