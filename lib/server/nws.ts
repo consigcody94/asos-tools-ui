@@ -1,10 +1,26 @@
 /** NWS api.weather.gov — current conditions + active CAP alerts.
  *  Documented limit: 5 req/s per client with descriptive User-Agent.
+ *
+ *  Feature-Flags: NWS API uses an opt-in header to roll out new fields
+ *  ahead of making them default. We send `forecast_temperature_qv` on
+ *  every request — it's been stable for 18+ months and adds quantitative
+ *  forecast variables (probability of precip / severe / thunder, etc.)
+ *  at no extra cost. To roll a new flag everywhere, add to
+ *  NWS_FEATURE_FLAGS below.
  */
 
 import { fetchJson } from "./fetcher";
 
 const BASE = "https://api.weather.gov";
+
+const NWS_FEATURE_FLAGS = ["forecast_temperature_qv"].join(",");
+
+/** Spread into owlFetch headers to opt into NWS feature flags + the
+ *  GeoJSON content type. */
+export const NWS_DEFAULT_HEADERS = {
+  Accept: "application/geo+json",
+  "Feature-Flags": NWS_FEATURE_FLAGS,
+};
 
 const cToF = (c: number | null | undefined) =>
   typeof c === "number" ? Math.round((c * 9 / 5 + 32) * 10) / 10 : null;
@@ -43,7 +59,7 @@ export async function getCurrentConditions(stationId: string): Promise<CurrentCo
   const icao = stationId.trim().toUpperCase();
   const data = await fetchJson<{ properties: Record<string, unknown> }>(
     `${BASE}/stations/${icao}/observations/latest`,
-    { headers: { Accept: "application/geo+json" }, timeoutMs: 15_000 },
+    { headers: NWS_DEFAULT_HEADERS, timeoutMs: 15_000 },
   );
   if (!data?.properties) return null;
   const p = data.properties;
@@ -79,7 +95,7 @@ export interface CapAlert {
 export async function getActiveAlerts(): Promise<CapAlert[]> {
   const data = await fetchJson<{ features: Array<{ properties: Record<string, unknown> }> }>(
     `${BASE}/alerts/active`,
-    { headers: { Accept: "application/geo+json" }, timeoutMs: 15_000 },
+    { headers: NWS_DEFAULT_HEADERS, timeoutMs: 15_000 },
   );
   if (!data?.features) return [];
   return data.features.map((f) => {

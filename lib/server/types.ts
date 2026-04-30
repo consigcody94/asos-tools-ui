@@ -37,6 +37,41 @@ export interface BuoyStation {
   owner?: string;
 }
 
+/** One entry in a station's rolling state log. Driven off the live
+ *  classifier output — the scan-cache maintains the last ~6 hours of
+ *  these per station so the classifier can detect *flapping* (bad→good→
+ *  bad→good) rather than just labeling current-window gaps. */
+export interface StateLogEntry {
+  /** ISO timestamp of when this entry was logged (start of the bucket). */
+  at: string;
+  /** Coarse-grained state: "OK" if CLEAN/RECOVERED, "FLAGGED" if $-flag,
+   *  "MISSING" if station was silent or no data was received. */
+  state: "OK" | "FLAGGED" | "MISSING";
+}
+
+/** Underlying-signal-density readout, populated by classify(). Surfaces
+ *  the bucket math so operators see WHY a station was classified the way
+ *  it was — "INTERMITTENT (1/4 buckets seen)" vs "INTERMITTENT (3/4)"
+ *  is the difference between "really degraded" and "one delayed report."
+ *  This was added after a data audit revealed bucket-edge classification
+ *  ambiguity on stations reporting at :51 vs :54. */
+export interface EvidenceQuality {
+  /** How many hourly buckets in the scan window had at least one METAR. */
+  buckets_seen: number;
+  /** How many buckets were expected (= scan window in hours, with the
+   *  most recent bucket excluded if it's still within the 15-min grace
+   *  period for late reports). */
+  buckets_expected: number;
+  /** Convenience ratio (0..1). UI uses this to colour the badge. */
+  fraction: number;
+  /** Number of $-flagged METARs in the window. Surfacing this helps
+   *  distinguish "one transient flag" from "consistently flagged." */
+  flagged_in_window: number;
+  /** Total METARs received in the window. Lets the UI show
+   *  "5 reports / 4 buckets" — flags special-obs frequency too. */
+  reports_seen: number;
+}
+
 /** Outcome of a second-source validation against NCEI's authoritative
  *  archive (or AWC fallback when NCEI is in a maintenance window).
  *  Populated by the scan-cache cross-check pass. Most rows in any given
@@ -76,4 +111,11 @@ export interface ScanRow {
   /** Optional second-source corroboration. Present only after the
    *  cross-check pass picked this row. */
   cross_check?: CrossCheck;
+  /** Underlying-signal-density readout. Present on every classified
+   *  row (not just disputed ones). */
+  evidence_quality?: EvidenceQuality;
+  /** Rolling state log — last ~6 hourly snapshots. Used by the
+   *  intermittent-detection refiner to identify flapping vs single-
+   *  window gaps. Persisted in the scan-cache merge buffer. */
+  state_log?: StateLogEntry[];
 }

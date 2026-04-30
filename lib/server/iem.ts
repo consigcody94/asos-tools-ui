@@ -196,7 +196,10 @@ function classify(
   now: Date,
   expectedBuckets: Set<number>,
   archiveEnd: string | null = null,
-): Pick<ScanRow, "status" | "minutes_since_last_report" | "last_metar" | "last_valid" | "probable_reason"> {
+): Pick<ScanRow,
+  "status" | "minutes_since_last_report" | "last_metar" | "last_valid" |
+  "probable_reason" | "evidence_quality"
+> {
   // Catalog-based OFFLINE: station was decommissioned before the scan window.
   if (archiveEnd) {
     const t = Date.parse(archiveEnd);
@@ -207,6 +210,13 @@ function classify(
         last_metar: null,
         last_valid: null,
         probable_reason: `decommissioned — archive_end ${archiveEnd}`,
+        evidence_quality: {
+          buckets_seen: 0,
+          buckets_expected: expectedBuckets.size,
+          fraction: 0,
+          flagged_in_window: 0,
+          reports_seen: 0,
+        },
       };
     }
   }
@@ -220,6 +230,13 @@ function classify(
       last_metar: null,
       last_valid: null,
       probable_reason: "no METAR received in scan window",
+      evidence_quality: {
+        buckets_seen: 0,
+        buckets_expected: expectedBuckets.size,
+        fraction: 0,
+        flagged_in_window: 0,
+        reports_seen: 0,
+      },
     };
   }
 
@@ -251,6 +268,18 @@ function classify(
   let missingBucketCount = 0;
   for (const b of expectedBuckets) if (!covered.has(b)) missingBucketCount++;
 
+  // Build the evidence_quality readout once — the four return paths
+  // below all stamp it. Surfacing this lets the UI render badges like
+  // "INTERMITTENT (2/4 buckets)" so operators see the underlying
+  // signal density alongside the verdict.
+  const evidence: ScanRow["evidence_quality"] = {
+    buckets_seen: covered.size,
+    buckets_expected: expectedBuckets.size,
+    fraction: expectedBuckets.size > 0 ? covered.size / expectedBuckets.size : 0,
+    flagged_in_window: flaggedInWindow,
+    reports_seen: rows.length,
+  };
+
   // Priority ladder — mirrors Python watchlist.build_watchlist():
   //   1. Silent ≥ 2h           → MISSING
   //   2. Latest $-flagged      → FLAGGED
@@ -266,6 +295,7 @@ function classify(
       last_metar: latest.metar,
       last_valid: latest.valid,
       probable_reason: `silent ${minsSinceLast ?? "?"}m (≥ ${MISSING_SILENCE_MIN}m threshold)`,
+      evidence_quality: evidence,
     };
   }
   if (latestFlagged) {
@@ -275,6 +305,7 @@ function classify(
       last_metar: latest.metar,
       last_valid: latest.valid,
       probable_reason: "maintenance-check indicator ($) set on latest METAR",
+      evidence_quality: evidence,
     };
   }
   // CLEAN tolerates one missing hourly bucket: ASOS METARs go out
@@ -291,6 +322,7 @@ function classify(
       last_metar: latest.metar,
       last_valid: latest.valid,
       probable_reason: null,
+      evidence_quality: evidence,
     };
   }
   if (flaggedInWindow === 0) {
@@ -300,6 +332,7 @@ function classify(
       last_metar: latest.metar,
       last_valid: latest.valid,
       probable_reason: `${missingBucketCount} hour(s) missing in scan window`,
+      evidence_quality: evidence,
     };
   }
   // flaggedInWindow > 0 — possibly RECOVERED
@@ -311,6 +344,7 @@ function classify(
       last_metar: latest.metar,
       last_valid: latest.valid,
       probable_reason: "recent $-flag cleared; last two reports clean",
+      evidence_quality: evidence,
     };
   }
   return {
@@ -319,6 +353,7 @@ function classify(
     last_metar: latest.metar,
     last_valid: latest.valid,
     probable_reason: `${flaggedInWindow} flagged + ${missingBucketCount} missing in window`,
+    evidence_quality: evidence,
   };
 }
 

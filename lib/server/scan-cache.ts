@@ -20,6 +20,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { scanNetwork, scanSummary } from "./iem";
+import { refineWithHistory } from "./intermittent";
 import { observeMs, setGauge } from "./metrics";
 import { crossCheckStation, isInNceiMaintenanceWindow } from "./ncei";
 import { redisGet, redisSet } from "./redis-cache";
@@ -86,8 +87,19 @@ async function runScan(): Promise<ScanState> {
   // didn't report station KXYZ but we've seen KXYZ before, keep its
   // previous row — operators only care that the status is correct
   // *the last time it was observable*.
+  //
+  // History-aware refinement: each merge runs the fresh row through
+  // refineWithHistory(), which uses the persistent state_log to detect
+  // flapping (INTERMITTENT) and sustained-bad-then-good (RECOVERED).
+  // The first-pass classifier in iem.ts is single-window and can't
+  // see those patterns; the refiner is what makes "INTERMITTENT
+  // means flapping" actually true.
+  const refinedNow = new Date();
   for (const r of freshRows) {
-    if (r.station) _lastKnown.set(r.station, r);
+    if (!r.station) continue;
+    const prev = _lastKnown.get(r.station);
+    const refined = refineWithHistory(r, prev?.state_log, refinedNow);
+    _lastKnown.set(r.station, refined);
   }
   const mergedRows = Array.from(_lastKnown.values());
   const { counts, total } = scanSummary(mergedRows);

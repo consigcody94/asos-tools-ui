@@ -204,3 +204,133 @@ export async function coopsNear(
     },
   };
 }
+
+// ---- OFS (Operational Forecast System) Water Level ------------------------
+//
+// CO-OPS exposes OFS model nowcast/forecast guidance at most real-time
+// water-level stations within an OFS domain (CBOFS Chesapeake Bay,
+// LEOFS Lake Erie, NYOFS New York Harbor, GoMOFS Gulf of Maine,
+// STOFS-3D Atlantic Coast, etc.). The product is `ofs_water_level` —
+// 6-min interval values from "now" stretching ~48 h forward.
+//
+// Why operationally critical for ASOS: a coastal ASOS site reporting
+// pressure/wind anomalies during a tropical or extratropical cyclone
+// becomes much more meaningful when the OFS forecast shows surge
+// already arriving at the nearest tide gauge. This is the closest
+// thing NOAA has to "what's the storm surge going to do at this
+// airport in the next 24 hours?"
+//
+// Data length limit per CO-OPS docs: 7 days for 6-min interval. We ask
+// for "today" by default (24h history); callers can extend with
+// daysBack/daysForward if needed.
+
+interface OfsRawRow {
+  t?: string;     // "YYYY-MM-DD HH:MM" GMT
+  v?: string;     // value as string
+  s?: string;     // sigma (forecast uncertainty)
+  f?: string;     // flags
+  q?: string;     // quality
+}
+
+interface OfsApiResponse {
+  metadata?: { id?: string; name?: string; lat?: string; lon?: string };
+  data?: OfsRawRow[];
+  predictions?: OfsRawRow[];   // legacy field name on some endpoints
+  error?: { message?: string };
+}
+
+export interface OfsWaterLevel {
+  station_id: string;
+  station_name: string;
+  /** OFS values are an aggregate of recent obs + forecast horizon.
+   *  We split them so the UI can label nowcast vs forecast distinctly. */
+  rows: Array<{
+    timestamp: string;     // ISO UTC
+    value_ft: number | null;
+    /** "nowcast" if t <= now, "forecast" if t > now. */
+    kind: "nowcast" | "forecast";
+  }>;
+  /** Peak forecast height + when, lifted out of `rows` for quick UI use. */
+  peak: { value_ft: number; timestamp: string } | null;
+  /** Trough (lowest) forecast height + when. Useful for low-water ops. */
+  trough: { value_ft: number; timestamp: string } | null;
+  /** Source URL for "see more on tidesandcurrents.noaa.gov" deep links. */
+  source_url: string;
+}
+
+/** Convert CO-OPS "YYYY-MM-DD HH:MM" GMT to ISO. */
+function coopsToIso(t: string | undefined): string | null {
+  if (!t) return null;
+  return t.trim().replace(" ", "T") + "Z";
+}
+
+/** Fetch OFS Water Level (nowcast + forecast) for a single CO-OPS
+ *  station. Returns null if the station is not within an OFS domain
+ *  (most inland or remote coastal stations) or the call errors. */
+export async function fetchOfsWaterLevel(
+  stationId: string,
+  hoursBack = 6,
+  hoursForward = 36,
+): Promise<OfsWaterLevel | null> {
+  const id = stationId.trim();
+  if (!id) return null;
+  const now = new Date();
+  const start = new Date(now.getTime() - hoursBack * 3_600_000);
+  const end = new Date(now.getTime() + hoursForward * 3_600_000);
+  const fmt = (d: Date) =>
+    `${d.getUTCFullYear()}` +
+    `${String(d.getUTCMonth() + 1).padStart(2, "0")}` +
+    `${String(d.getUTCDate()).padStart(2, "0")} ` +
+    `${String(d.getUTCHours()).padStart(2, "0")}:` +
+    `${String(d.getUTCMinutes()).padStart(2, "0")}`;
+
+  const data = await fetchJson<OfsApiResponse>(`${DATA_API}`, {
+    query: {
+      station: id,
+      product: "ofs_water_level",
+      datum: "MLLW",
+      time_zone: "gmt",
+      units: "english",
+      begin_date: fmt(start),
+      end_date: fmt(end),
+      format: "json",
+      application: APP_ID,
+    },
+    timeoutMs: 15_000,
+    retries: 1,
+  });
+  if (!data || data.error || !Array.isArray(data.data) && !Array.isArray(data.predictions)) {
+    // OFS isn't available at this station, or upstream is having a moment.
+    return null;
+  }
+  const raw = data.data ?? data.predictions ?? [];
+  if (raw.length === 0) return null;
+
+  const nowMs = now.getTime();
+  const rows: OfsWaterLevel["rows"] = [];
+  let peak: { value_ft: number; timestamp: string } | null = null;
+  let trough: { value_ft: number; timestamp: string } | null = null;
+
+  for (const r of raw) {
+    const iso = coopsToIso(r.t);
+    if (!iso) continue;
+    const v = r.v ? Number(r.v) : null;
+    const kind: "nowcast" | "forecast" =
+      Date.parse(iso) <= nowMs ? "nowcast" : "forecast";
+    rows.push({ timestamp: iso, value_ft: v, kind });
+    // Only forecast values feed peak/trough — nowcast is observation, not prediction.
+    if (kind === "forecast" && v != null && Number.isFinite(v)) {
+      if (!peak || v > peak.value_ft) peak = { value_ft: v, timestamp: iso };
+      if (!trough || v < trough.value_ft) trough = { value_ft: v, timestamp: iso };
+    }
+  }
+
+  return {
+    station_id: data.metadata?.id ? String(data.metadata.id) : id,
+    station_name: data.metadata?.name ? String(data.metadata.name) : id,
+    rows,
+    peak,
+    trough,
+    source_url: `https://tidesandcurrents.noaa.gov/ofs/ofs_station.html?stname=${id}`,
+  };
+}
