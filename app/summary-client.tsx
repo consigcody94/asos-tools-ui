@@ -199,6 +199,10 @@ export function SummaryClient({
     lastMetar?: string | null;
     lastValid?: string | null;
     probableReason?: string | null;
+    /** Click-target kind. Drives drill-panel fetch behavior — non-ASOS
+     *  kinds skip the METAR/imagery calls that would 404 for buoys,
+     *  radar sites, satellites, and EONET events. */
+    kind?: "asos" | "buoy" | "radar" | "satellite" | "event";
   } | null>(null);
   // Seed status state from the SSR'd snapshot so the very first render
   // has all 918 stations colored — no waiting on SSE / poll round-trips.
@@ -666,6 +670,8 @@ export function SummaryClient({
                 return;
               }
               // NEXRAD radar — find matching row, open drill panel.
+              // Mark kind="radar" so the drill panel skips ASOS-only
+              // METAR/imagery fetches and just renders the geo hazards.
               if (p.station.startsWith("RADAR:")) {
                 const id = p.station.replace(/^RADAR:/, "");
                 const row = nexradRows.find((r) => r.station === id);
@@ -676,6 +682,7 @@ export function SummaryClient({
                   status: row?.status ?? "UP",
                   probableReason: row?.reason ?? null,
                   lastValid: row?.since ?? null,
+                  kind: "radar",
                 });
                 return;
               }
@@ -689,6 +696,7 @@ export function SummaryClient({
                   status: row?.status ?? "UP",
                   minutesSinceLast: row?.minutes_since,
                   lastValid: row?.since ?? null,
+                  kind: "buoy",
                 });
                 return;
               }

@@ -23,6 +23,10 @@ interface Props {
     lastMetar?: string | null;
     lastValid?: string | null;
     probableReason?: string | null;
+    /** Click-target kind. Drives which fetches the panel runs:
+     *  ASOS gets METAR + imagery + NOTAMs; buoys/radar/satellite/event
+     *  get hazards-by-coords only (METAR doesn't apply to buoys, etc.). */
+    kind?: "asos" | "buoy" | "radar" | "satellite" | "event";
   } | null;
   onClose: () => void;
 }
@@ -145,7 +149,10 @@ export function DrillPanel({ station, onClose }: Props) {
       .catch(() => setCams([]))
       .finally(() => setCamsLoading(false));
 
-    getStationHazards(station.id)
+    // Hazards work for any click target — pass lat/lon so the API
+    // can compute geo-context for non-catalog clicks (NEXRAD radar,
+    // NDBC buoys, satellites, EONET events).
+    getStationHazards(station.id, { lat: station.lat, lon: station.lng })
       .then((h) =>
         setHazards({
           quakes: (h.quakes as unknown as QuakeRec[]) ?? [],
@@ -157,19 +164,32 @@ export function DrillPanel({ station, onClose }: Props) {
       )
       .catch(() => setHazards(null));
 
-    fetch(`/api/station/${encodeURIComponent(station.id)}/metar`)
-      .then((r) => r.json())
-      .then((data: StationMetarResponse) => setMetar(data))
-      .catch(() => setMetar(null))
-      .finally(() => setMetarLoading(false));
+    // METAR + imagery fetches are ASOS-only. Buoys, radar, satellites,
+    // and EONET events have no METAR; skip the fetches so the drill
+    // panel doesn't show "couldn't load" for those click targets.
+    const isAsos = !station.kind || station.kind === "asos";
+    if (isAsos) {
+      fetch(`/api/station/${encodeURIComponent(station.id)}/metar`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data: StationMetarResponse | null) => setMetar(data))
+        .catch(() => setMetar(null))
+        .finally(() => setMetarLoading(false));
 
-    setImageryLoading(true);
-    setImagery(null);
-    fetch(`/api/station/${encodeURIComponent(station.id)}/imagery`)
-      .then((r) => r.json())
-      .then((data: ImageryResponse) => setImagery(data))
-      .catch(() => setImagery(null))
-      .finally(() => setImageryLoading(false));
+      setImageryLoading(true);
+      setImagery(null);
+      fetch(`/api/station/${encodeURIComponent(station.id)}/imagery`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data: ImageryResponse | null) => setImagery(data))
+        .catch(() => setImagery(null))
+        .finally(() => setImageryLoading(false));
+    } else {
+      // Non-ASOS click target: clear the loading state so the panel
+      // renders the hazards/cams sections without a perpetual spinner.
+      setMetar(null);
+      setMetarLoading(false);
+      setImagery(null);
+      setImageryLoading(false);
+    }
   }, [station]);
 
   if (!station) return null;

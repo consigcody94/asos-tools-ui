@@ -114,7 +114,11 @@ export const getNews = (limit = 30) =>
 export const getSources = () =>
   owlFetch<Array<Record<string, unknown>>>("/api/sources", { revalidate: 3600 });
 
-export const getStationHazards = (id: string) =>
+/** Fetch site hazards (quakes / tropical storms / buoy / coops / notams).
+ *  Pass lat/lon for non-catalog click targets (NEXRAD radar, NDBC buoys,
+ *  EONET events) so the API can compute geo-context without a catalog
+ *  hit. ASOS calls work without lat/lon — the catalog lookup carries it. */
+export const getStationHazards = (id: string, latLon?: { lat: number; lon: number }) =>
   owlFetch<{
     station: { id: string; name: string; lat: number; lon: number; state: string };
     quakes: Array<Record<string, unknown>>;
@@ -122,7 +126,12 @@ export const getStationHazards = (id: string) =>
     buoy: unknown;
     coops: unknown;
     notams: Record<string, unknown>;
-  }>(`/api/station/${encodeURIComponent(id)}/hazards`, { revalidate: 120 });
+  }>(
+    `/api/station/${encodeURIComponent(id)}/hazards${
+      latLon ? `?lat=${latLon.lat}&lon=${latLon.lon}` : ""
+    }`,
+    { revalidate: 120 },
+  );
 
 export const searchStations = (q: string, limit = 20) =>
   owlFetch<Array<{ id: string; name: string; state: string; lat: number; lon: number }>>(
