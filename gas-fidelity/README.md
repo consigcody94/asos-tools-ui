@@ -4,22 +4,43 @@
 > Apps Script. **Identical front-end** (his exact HTML/CSS/JS, byte-
 > for-byte), with a **rebuilt back-end** that pulls METAR data from
 > live NOAA APIs instead of a manually-curated Google Sheet column.
->
-> Operator UX is unchanged. The Sheet-as-METAR-source pipeline is
-> gone. Everything else stays.
 
-## What this fixes
+## ⚠ The single most important change
 
-The legacy Apps Script read ASOS "Last Observation" data from
-**PIDS column AX** of a Google Sheet workbook. That column had to
-be refreshed by humans or a separate export job — in practice
-producing METAR data that was minutes-to-hours stale.
+**This build no longer reads METAR data from a Google Sheet.**
 
-This build leaves the front-end alone (so operators see the exact
-same map, popups, sidebar, admin page, overlays they're used to)
-and replaces only the data-source layer:
+The legacy app's primary failure mode was that ASOS "Last Observation"
+data was sourced from a sheet column (PIDS Col AX) that humans or a
+separate export job had to keep refreshed. METARs were minutes-to-hours
+stale by design.
 
-- **Live IEM batch CGI** instead of sheet column AX (5-min refresh)
+In this build:
+
+| Data | Legacy source | This build |
+|---|---|---|
+| ASOS METAR ("Last Ob") | PIDS Col AX (sheet) | **Live IEM batch CGI**, 5-min refresh |
+| Status classification | PIDS Col AP (sheet, hand-edited) | **Computed live** from the METAR + 6-hour state log |
+| Outage cause / `$` flag detail | PIDS Col AS (sheet free-text) | **Decoded from the METAR's NO-codes** (PWINO, FZRANO, RVRNO, etc.) |
+| Service backup, patching, backup-target | PIDS Cols AT/AU/AV (sheet) | Not populated *(those PIDS fields don't have an API equivalent)* |
+| WWA list popup | NWS Active WWA (by Site) sheet | **Live NWS CAP alerts** |
+| Banners | Banner workbook | Optional `Banners` tab (operator-editable) |
+| Long-missing site list | Not in legacy | **New** — auto-detected from the live scan, every station silent > 14 days |
+
+If a sheet column was the source of truth in the legacy app, **this
+build does not read it**. The only sheets we touch are the ones the
+script writes to itself for state persistence (`Health`, `History`,
+`StateLog`, `ActiveUsers`, `UserHistory`, `Banners`) — all auto-
+created on first run, all internal to this script.
+
+> **Operator UX is unchanged.** Every map, popup, filter, button, and
+> overlay looks the same as before. The data behind them is just live
+> now.
+
+## What's new in the back-end
+
+(See the table above for the full sheet → API mapping.)
+
+- **Live IEM batch CGI** for METAR fetch (5-min refresh)
 - **AWC fallback** for any station IEM didn't return in a batch
 - **NCEI cross-check** validates against the authoritative archive
   (maintenance-window aware)
