@@ -169,11 +169,11 @@ export const SOURCES: Source[] = [
   {
     name: "NOAA NWPS",
     url: "https://api.water.noaa.gov/nwps/v1",
-    used_for: "River observations, official streamflow forecasts, National Water Model, flood categories",
+    used_for: "Nearest-gauge stage/flow, official forecasts, flood categories — drill panel hydrology context",
     auth: "none", cadence: "real-time + forecast", trust: "agency",
     rate_limit: "1 req/s (safe default)",
-    notes: "Ready next for hydrology/flood proximity around inland ASOS sites.",
-    wired: "documented",
+    notes: "URL templates derived from NOAA-OWP/hydrotools. Catalog (~10k gauges) cached 24h; per-gauge stageflow fetched on drill click. Endpoint: /api/nwps?lat=&lon=.",
+    wired: "live",
   },
   {
     name: "NOAA NOMADS",

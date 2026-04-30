@@ -7,7 +7,12 @@
 
 export { hasMaintenanceFlag, decodeMaintenanceReasons, decodeReasonsShort, SENSOR_INDICATORS } from "./metar-reasons";
 export type { MaintenanceReason } from "./metar-reasons";
-export { decodeMetar } from "./metar-decode";
+// Canonical decoder is now v2 (metar-taf-parser-backed). The old hand-
+// rolled decoder still exists at metar-decode.ts as the source of the
+// shared TYPE definitions (DecodedMetar etc.) — only the implementation
+// moved. If the new parser ever regresses on a real-world METAR we
+// can flip this single import back to "./metar-decode".
+export { decodeMetar } from "./metar-decode-v2";
 export type {
   DecodedMetar, WindGroup, CloudLayer, CloudCoverage, WeatherGroup,
   WeatherIntensity, FlightCategory,
