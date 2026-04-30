@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { X, ExternalLink, Copy, Check } from "lucide-react";
 import { getCamerasNear, getStationHazards, type WeatherCam } from "@/lib/api";
+import { StationTimeline } from "@/components/station-timeline";
 
 interface Props {
   station: {
@@ -27,6 +28,25 @@ interface Props {
      *  ASOS gets METAR + imagery + NOTAMs; buoys/radar/satellite/event
      *  get hazards-by-coords only (METAR doesn't apply to buoys, etc.). */
     kind?: "asos" | "buoy" | "radar" | "satellite" | "event";
+    /** Optional diagnostic detail from the scan row. When present,
+     *  drives the timeline + evidence-quality readouts in the panel. */
+    evidenceQuality?: {
+      buckets_seen: number;
+      buckets_expected: number;
+      fraction: number;
+      flagged_in_window: number;
+      reports_seen: number;
+      consecutive_silent_buckets?: number;
+    } | null;
+    stateLog?: Array<{ at: string; state: "OK" | "FLAGGED" | "MISSING" }> | null;
+    crossCheck?: {
+      source: "ncei" | "awc" | "nws";
+      agrees_with_iem: boolean;
+      checked_at: string;
+      buckets_seen: number;
+      suggested_status?: string;
+      skipped?: string;
+    } | null;
   } | null;
   onClose: () => void;
 }
@@ -254,12 +274,20 @@ export function DrillPanel({ station, onClose }: Props) {
         <StationMetric label="Position" value={`${station.lat.toFixed(3)}, ${station.lng.toFixed(3)}`} />
       </div>
 
-      {station.probableReason && (
-        <div className="mb-4 rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)] p-3">
-          <div className="noc-label mb-1 text-[0.58rem]">Probable reason</div>
-          <div className="text-sm text-[color:var(--color-fg)]">{station.probableReason}</div>
-        </div>
-      )}
+      {/* Diagnostic timeline — surfaces all the new fields:
+       *  evidence_quality, state_log, cross_check + decoded reason.
+       *  Replaces the old single-line probable_reason chip. */}
+      <div className="mb-4">
+        <StationTimeline
+          status={station.status}
+          minutesSinceLast={station.minutesSinceLast}
+          lastValid={station.lastValid}
+          probableReason={station.probableReason}
+          evidenceQuality={station.evidenceQuality}
+          stateLog={station.stateLog}
+          crossCheck={station.crossCheck}
+        />
+      </div>
 
       {station.lastMetar && (
         <div className="mb-4 rounded border border-[color:var(--color-border)] bg-[color:var(--color-bg)] p-3">

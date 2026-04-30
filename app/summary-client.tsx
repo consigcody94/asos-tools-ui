@@ -42,6 +42,26 @@ interface ScanRow {
   last_metar?: string | null;
   last_valid?: string | null;
   probable_reason?: string | null;
+  /** Diagnostic fields populated by the server-side classifier. Optional
+   *  on the client because the slim /api/scan-results response (no `full=1`)
+   *  still omits them; the SSR snapshot includes them. */
+  evidence_quality?: {
+    buckets_seen: number;
+    buckets_expected: number;
+    fraction: number;
+    flagged_in_window: number;
+    reports_seen: number;
+    consecutive_silent_buckets?: number;
+  };
+  state_log?: Array<{ at: string; state: "OK" | "FLAGGED" | "MISSING" }>;
+  cross_check?: {
+    source: "ncei" | "awc" | "nws";
+    agrees_with_iem: boolean;
+    checked_at: string;
+    buckets_seen: number;
+    suggested_status?: string;
+    skipped?: string;
+  };
 }
 
 interface EonetEvent {
@@ -203,6 +223,10 @@ export function SummaryClient({
      *  kinds skip the METAR/imagery calls that would 404 for buoys,
      *  radar sites, satellites, and EONET events. */
     kind?: "asos" | "buoy" | "radar" | "satellite" | "event";
+    /** Optional diagnostic fields piped through to StationTimeline. */
+    evidenceQuality?: ScanRow["evidence_quality"] | null;
+    stateLog?: ScanRow["state_log"] | null;
+    crossCheck?: ScanRow["cross_check"] | null;
   } | null>(null);
   // Seed status state from the SSR'd snapshot so the very first render
   // has all 918 stations colored — no waiting on SSE / poll round-trips.
@@ -700,7 +724,10 @@ export function SummaryClient({
                 });
                 return;
               }
-              // ASOS — full drill including METAR.
+              // ASOS — full drill including METAR + diagnostic timeline.
+              // We pass every new diagnostic field through so the
+              // StationTimeline component can render evidence_quality,
+              // state_log, and cross_check without refetching them.
               const catalog = STATIONS.find((item) => item.id === p.station);
               const scan = scanByStation[p.station];
               setStation({
@@ -714,6 +741,10 @@ export function SummaryClient({
                 lastMetar: scan?.last_metar,
                 lastValid: scan?.last_valid,
                 probableReason: scan?.probable_reason,
+                evidenceQuality: scan?.evidence_quality ?? null,
+                stateLog: scan?.state_log ?? null,
+                crossCheck: scan?.cross_check ?? null,
+                kind: "asos",
               });
             }}
           />
