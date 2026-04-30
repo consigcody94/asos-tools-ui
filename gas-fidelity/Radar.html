@@ -1,0 +1,184 @@
+<!-- Radar overlay add-on -->
+<script>
+(() => {
+  if (window.installRadar) return;
+
+  const BADGE_ID = "radarCorsBadge";
+  const OVERLAYS_BADGE_ID = "overlaysFailBadge";
+  const TOGGLE_ID = "radarToggle";
+  const RANGE_ID  = "radarOpacity";
+  const LABEL_ID  = "radarOpacityValue";
+
+  // Keep the same keys already used by this project UI
+  const KEY_VIS = "radarVisible";
+  const KEY_OP  = "radarOpacity_v1";
+
+  // Keep the same layer ID expected by JavaScript.html lazyGate
+  const LAYER_ID = "radarReflLayer";
+  const LAYER_TITLE = "Radar Reflectivity";
+
+  let radarLayer = null;
+
+  function $(id){ return document.getElementById(id); }
+
+  function readBool(key, fallback){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null || v === undefined) return fallback;
+      if (v === "true" || v === "false") return v === "true";
+      return !!JSON.parse(v);
+    } catch(_) { return fallback; }
+  }
+
+  function readNum(key, fallback){
+    try {
+      const v = localStorage.getItem(key);
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : fallback;
+    } catch(_) { return fallback; }
+  }
+
+  function writeBool(key, val){
+    try { localStorage.setItem(key, JSON.stringify(!!val)); } catch(_) {}
+  }
+
+  function writeNum(key, val){
+    try { localStorage.setItem(key, String(val)); } catch(_) {}
+  }
+
+  function clamp01(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function setBadge(status, message){
+    const badge = $(BADGE_ID);
+    if (badge) {
+      if (status === "ok" || status === "idle") {
+        badge.style.display = "none";
+      } else {
+        badge.style.display = "inline-block";
+        if (status === "loading") badge.textContent = "(Radar loading…)";
+        else badge.textContent = message ? `(Radar failed: ${message})` : "(Radar failed to load)";
+        badge.title = message ? String(message) : "";
+      }
+    }
+
+    const ov = $(OVERLAYS_BADGE_ID);
+    if (ov) {
+      if (status === "ok" || status === "idle") {
+        ov.style.display = "none";
+      } else {
+        ov.style.display = "inline-block";
+        ov.textContent = "(Some overlays failed)";
+      }
+    }
+  }
+
+  function updateOpacityLabel(op){
+    const label = $(LABEL_ID);
+    if (label) label.textContent = `${Math.round(op * 100)}%`;
+  }
+
+  function desiredVisible(){
+    const t = $(TOGGLE_ID);
+    if (t) return !!t.checked;
+    return readBool(KEY_VIS, false);
+  }
+
+  function desiredOpacity(){
+    const r = $(RANGE_ID);
+    if (r) return clamp01(r.value);
+    return clamp01(readNum(KEY_OP, 0.60));
+  }
+
+  function applyVisibility(){
+    const vis = desiredVisible();
+    writeBool(KEY_VIS, vis);
+    if (radarLayer) radarLayer.visible = vis;
+    if (!vis) setBadge("idle");
+  }
+
+  function applyOpacity(){
+    const op = desiredOpacity();
+    writeNum(KEY_OP, op);
+    updateOpacityLabel(op);
+    if (radarLayer) radarLayer.opacity = op;
+  }
+
+  function ensureRadarLayer(map, WebTileLayer) {
+    if (radarLayer) return radarLayer;
+
+    radarLayer = new WebTileLayer({
+      urlTemplate: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q/{level}/{col}/{row}.png",
+      id: LAYER_ID,
+      title: LAYER_TITLE,
+      visible: false,
+      opacity: readNum(KEY_OP, 0.60),
+      copyright: "Iowa Environmental Mesonet"
+    });
+
+    radarLayer.load().then(() => {
+      try {
+        if (!map.findLayerById(LAYER_ID)) {
+          map.add(radarLayer, 0);
+        }
+        setBadge("ok");
+      } catch (err) {
+        console.warn("Radar layer add failed:", err);
+        setBadge("fail", "layer add failed");
+      }
+    }).catch(err => {
+      console.warn("Radar base reflectivity failed to load:", err);
+      setBadge("fail", "tile layer failed to load");
+    });
+
+    return radarLayer;
+  }
+
+  window.installRadar = function installRadar({ map, view }) {
+    require([
+      "esri/layers/WebTileLayer"
+    ], (WebTileLayer) => {
+
+      const $toggle = $(TOGGLE_ID);
+      const $range  = $(RANGE_ID);
+
+      if ($toggle) $toggle.checked = readBool(KEY_VIS, false);
+      if ($range)  $range.value = String(readNum(KEY_OP, 0.60));
+
+      updateOpacityLabel(desiredOpacity());
+
+      if ($toggle && $toggle.dataset.radarWired !== "1") {
+        $toggle.dataset.radarWired = "1";
+        $toggle.addEventListener("change", () => {
+          const layer = ensureRadarLayer(map, WebTileLayer);
+          applyVisibility();
+          if ($toggle.checked && layer) {
+            layer.visible = true;
+            setBadge("ok");
+          }
+        });
+      }
+
+      if ($range && $range.dataset.radarWired !== "1") {
+        $range.dataset.radarWired = "1";
+        $range.addEventListener("input", () => applyOpacity());
+        $range.addEventListener("change", () => applyOpacity());
+      }
+
+      const layer = ensureRadarLayer(map, WebTileLayer);
+      applyOpacity();
+      applyVisibility();
+
+      if (desiredVisible() && layer) {
+        layer.visible = true;
+        setBadge("ok");
+      } else {
+        setBadge("idle");
+      }
+    });
+  };
+})();
+</script>

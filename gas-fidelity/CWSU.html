@@ -1,0 +1,175 @@
+<script>
+(function () {
+  if (window.installCWSU) return;
+
+  // Contrasting fill palette (RGBA) - same style as RFC
+  const CWSU_PALETTE = [
+    [  0,114,178,120],[213, 94,  0,120],[  0,158,115,120],[204,121,167,120],
+    [240,228, 66,120],[ 86,180,233,120],[230,159,  0,120],[128,  0,128,120],
+    [220, 20, 60,120],[ 34,139, 34,120],[ 70,130,180,120],[255,105,180,120],
+    [210,105, 30,120],[ 46,139, 87,120],[106, 90,205,120],[199, 21,133,120]
+  ];
+
+  window.installCWSU = function ({ view, map }) {
+    console.log("[CWSU] installCWSU called");
+
+    require([
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/Polygon",
+      "esri/geometry/SpatialReference",
+      "esri/symbols/SimpleFillSymbol"
+    ], function (GraphicsLayer, Graphic, Polygon, SpatialReference, SimpleFillSymbol) {
+
+      const toggle = document.getElementById("cwsuToggle");
+      const range  = document.getElementById("cwsuOpacity");
+      const label  = document.getElementById("cwsuOpacityValue");
+
+      // Persist visibility + opacity across refresh
+      const VIS_KEY = "cwsuVisible";
+      const OP_KEY  = "cwsuOpacity";
+
+      const loadVis = () => {
+        const v = localStorage.getItem(VIS_KEY);
+        return v !== null ? JSON.parse(v) : false; // default OFF (change to true if you want)
+      };
+      const loadOp = () => {
+        const v = localStorage.getItem(OP_KEY);
+        return v !== null ? parseFloat(v) : 0.85;
+      };
+      const saveVis = (v) => localStorage.setItem(VIS_KEY, JSON.stringify(!!v));
+      const saveOp  = (v) => localStorage.setItem(OP_KEY, String(v));
+
+      const initVis = loadVis();
+      const initOp  = loadOp();
+
+      if (toggle) toggle.checked = !!initVis;
+      if (range)  range.value = String(initOp);
+      if (label)  label.textContent = `${Math.round(initOp * 100)}%`;
+
+      // Remove existing CWSU layer before adding a new one
+      const existing = map.findLayerById("cwsuFootprintLayer");
+      if (existing) map.remove(existing);
+
+      // Same pattern as RFC: create graphics with per-graphic symbols
+      const FIELD = "__cwsuIdx";
+
+      function geojsonToGraphics(geojson) {
+        const out = [];
+        const feats = (geojson && geojson.features) ? geojson.features : [];
+        let featureIdx = 0;
+
+        function pushPolygon(coords, props, idxForThisFeature) {
+          const rings = coords.map(r => r.map(([x, y]) => [x, y]));
+          const attrs = Object.assign({}, props || {});
+          attrs[FIELD] = String(idxForThisFeature);
+
+          const sym = new SimpleFillSymbol({
+            color: CWSU_PALETTE[idxForThisFeature % CWSU_PALETTE.length],
+            outline: { color: [40, 40, 40, 180], width: 0.75 }
+          });
+
+          out.push(new Graphic({
+            geometry: new Polygon({
+              rings,
+              spatialReference: SpatialReference.WGS84
+            }),
+            attributes: attrs,
+            symbol: sym   // <-- KEY: per-graphic symbol (like RFC)
+          }));
+        }
+
+        for (const f of feats) {
+          if (!f || !f.geometry) continue;
+
+          const idxForThisFeature = featureIdx; // same for all parts of this feature
+          const g = f.geometry;
+          const props = f.properties || {};
+
+          if (g.type === "Polygon") {
+            pushPolygon(g.coordinates, props, idxForThisFeature);
+          } else if (g.type === "MultiPolygon") {
+            for (const poly of g.coordinates) {
+              pushPolygon(poly, props, idxForThisFeature);
+            }
+          }
+
+          featureIdx++; // advance once per FEATURE (this is what makes colors differ)
+        }
+
+        return out;
+      }
+
+      google.script.run
+        .withFailureHandler(function (err) {
+          console.error("[CWSU] transport failure:", err);
+          alert("CWSU Footprint failed to load (transport). See console.");
+        })
+        .withSuccessHandler(function (res) {
+          try {
+            if (!res || !res.ok) {
+              console.error("[CWSU] server failure:", res);
+              alert("CWSU Footprint failed to load (server): " + (res && res.error ? res.error : "Unknown"));
+              return;
+            }
+
+            const geo = JSON.parse(res.text);
+            const graphics = geojsonToGraphics(geo);
+
+            console.log("[CWSU] features:", (geo.features || []).length, "polygons:", graphics.length);
+
+            if (!graphics.length) {
+              alert("CWSU loaded but produced 0 polygons. Check GeoJSON geometry types.");
+              return;
+            }
+
+            const cwsuLayer = new GraphicsLayer({
+              title: "CWSU Footprint",
+              id: "cwsuFootprintLayer",
+              visible: !!initVis,
+              opacity: initOp,
+              listMode: "hide"
+            });
+
+            // Symbols are assigned per-graphic (do NOT rely on renderer)
+            cwsuLayer.addMany(graphics);
+
+            map.add(cwsuLayer);
+            // Put below RFC (RFC is reordered to index 2 in your working code)
+            // Keep CWSU below point graphics (lower index draws underneath)
+            try { map.reorder(cwsuLayer, 0); } catch (e) {}
+
+
+            console.log("[CWSU] layer added. visible=", cwsuLayer.visible, "opacity=", cwsuLayer.opacity);
+
+            // Wire UI events
+            if (toggle) {
+              toggle.addEventListener("change", function () {
+                const v = !!toggle.checked;
+                saveVis(v);
+                cwsuLayer.visible = v;
+              });
+            }
+
+            if (range) {
+              range.addEventListener("input", function () {
+                const op = parseFloat(range.value);
+                const v = isFinite(op) ? op : 0.85;
+                saveOp(v);
+                cwsuLayer.opacity = v;
+                if (label) label.textContent = `${Math.round(v * 100)}%`;
+              });
+            }
+
+            window._cwsu = { layer: cwsuLayer, field: FIELD };
+
+          } catch (e) {
+            console.error("[CWSU] success handler exception:", e);
+            alert("CWSU threw an exception. See console.");
+          }
+        })
+        .getCwsuGeojsonText(); // Code.gs function
+    });
+  };
+})();
+</script>

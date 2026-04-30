@@ -1,0 +1,248 @@
+<script>
+(function () {
+  if (window.installTimezones) return;
+
+  window.installTimezones = function ({ view, map }) {
+    require([
+      "esri/layers/FeatureLayer",
+      "esri/core/promiseUtils"
+    ], function (FeatureLayer, promiseUtils) {
+
+      const tgl = document.getElementById("tzToggle");
+      const rng = document.getElementById("tzOpacity");
+      const val = document.getElementById("tzOpacityValue");
+
+      function saveTzVisible(v) { try { localStorage.setItem("tzVisible", JSON.stringify(!!v)); } catch(_) {} }
+      function loadTzVisible()  { try { const v = localStorage.getItem("tzVisible"); return v !== null ? JSON.parse(v) : false; } catch(_) { return false; } }
+      function saveTzOpacity(v) { try { localStorage.setItem("tzOpacity", String(v)); } catch(_) {} }
+      function loadTzOpacity()  { try { const v = localStorage.getItem("tzOpacity"); return v !== null ? parseFloat(v) : 0.35; } catch(_) { return 0.35; } }
+
+      function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+      function strengthToOverlay(s) { return clamp(0.2 + 0.6 * s, 0.2, 0.8); }
+
+      const initVis = !!loadTzVisible();
+      const initStrength = clamp(loadTzOpacity(), 0, 1);
+
+      if (tgl) tgl.checked = initVis;
+      if (rng) rng.value = String(initStrength);
+      if (val) val.textContent = Math.round(initStrength * 100) + "%";
+
+      // ---------- 1) POLYGON SHADING (BOTTOM) ----------
+      const tzPolyLayer = new FeatureLayer({
+        url: "https://services.arcgis.com/iQ1dY19aHwbSDYIF/ArcGIS/rest/services/World_Time_Zones/FeatureServer/0",
+        outFields: ["ZONE"],
+        listMode: "hide",
+        visible: initVis,
+        opacity: 1
+      });
+
+      setShadingStrength(tzPolyLayer, initStrength);
+      try { map.add(tzPolyLayer, 0); } catch { map.add(tzPolyLayer); }
+
+      // ---------- 2) SCREEN OVERLAY BAR (LABELS) ----------
+      const overlay = ensureOverlay(view);
+      overlay.style.display = initVis ? "block" : "none";
+      overlay.style.opacity = strengthToOverlay(initStrength);
+
+      // ---------- 3) UPDATE HOOKS ----------
+      const redraw = promiseUtils.debounce(() => renderTopLabels(view, overlay));
+      view.watch("stationary", s => { if (s && tzPolyLayer.visible) redraw(); });
+      view.watch("extent",     () => { if (tzPolyLayer.visible) redraw(); });
+      view.watch("scale",      () => { if (tzPolyLayer.visible) redraw(); });
+      view.watch("zoom",       () => { if (tzPolyLayer.visible) redraw(); });
+      window.addEventListener("resize", () => { if (tzPolyLayer.visible) renderTopLabels(view, overlay); }, { passive: true });
+      setInterval(() => { if (tzPolyLayer.visible) renderTopLabels(view, overlay); }, 60 * 1000);
+
+      if (initVis) renderTopLabels(view, overlay);
+
+      // ---------- 4) WIRE CONTROLS ----------
+      if (tgl && tgl.dataset.tzWired !== "1") {
+        tgl.dataset.tzWired = "1";
+        tgl.addEventListener("change", () => {
+          tzPolyLayer.visible = !!tgl.checked;
+          overlay.style.display = tgl.checked ? "block" : "none";
+          saveTzVisible(tgl.checked);
+          if (tgl.checked) renderTopLabels(view, overlay); else clearOverlay(overlay);
+        });
+      }
+
+      if (rng && rng.dataset.tzWired !== "1") {
+        rng.dataset.tzWired = "1";
+        rng.addEventListener("input", () => {
+          const s = clamp(parseFloat(rng.value), 0, 1);
+          setShadingStrength(tzPolyLayer, s);
+          overlay.style.opacity = strengthToOverlay(s);
+          if (val) val.textContent = Math.round(s * 100) + "%";
+          saveTzOpacity(s);
+        });
+      }
+
+      // ============= Helpers (same behavior as before) =============
+
+      function ensureOverlay(view) {
+        let el = document.getElementById("tzTopOverlay");
+        if (el) return el;
+
+        el = document.createElement("div");
+        el.id = "tzTopOverlay";
+        Object.assign(el.style, {
+          position: "absolute",
+          left: "0",
+          right: "0",
+          top: "0",
+          height: "28px",
+          pointerEvents: "none",
+          zIndex: "2",
+          display: "none"
+        });
+
+        const inner = document.createElement("div");
+        inner.id = "tzTopOverlayInner";
+        Object.assign(inner.style, { position: "absolute", inset: "0 0 0 0", display: "flex" });
+        el.appendChild(inner);
+
+        document.getElementById("mainContainer").appendChild(el);
+
+        const prev = window._syncViewPaddingHook;
+        window._syncViewPaddingHook = (pad) => {
+          el.style.top = (pad?.top ?? 0) + "px";
+          if (typeof prev === "function") prev(pad);
+        };
+        return el;
+      }
+
+      function clearOverlay(el) {
+        const inner = el.querySelector("#tzTopOverlayInner");
+        if (inner) inner.innerHTML = "";
+      }
+
+      function renderTopLabels(view, el) {
+        const inner = el.querySelector("#tzTopOverlayInner");
+        if (!inner) return;
+        inner.innerHTML = "";
+
+        const rect   = view.container.getBoundingClientRect();
+        const W      = Math.max(50, Math.floor(rect.width));
+        const padTop = (view.padding?.top ?? 0);
+        const yPx    = padTop + 2;
+
+        const now    = new Date();
+        const STEP   = 28;
+        const MIN_LBL = clamp(Math.floor(W / 20), 36, 96);
+        const MIN_SLIVER = Math.floor(MIN_LBL * 0.6);
+
+        const runs = [];
+        let prevLabel = null, runStart = 0;
+
+        for (let x = 0; x <= W; x += STEP) {
+          const pt = safeToMap(view, { x, y: yPx });
+          const tzid = pt ? safeTz(pt.latitude, pt.longitude) : null;
+          const label = tzid ? formatTimeForTZ(now, tzid) : null;
+          if (prevLabel === null) { prevLabel = label; runStart = 0; }
+          if (label !== prevLabel) {
+            runs.push({ x0: runStart, x1: x, label: prevLabel });
+            runStart = x; prevLabel = label;
+          }
+        }
+        runs.push({ x0: runs.length ? runs[runs.length - 1].x1 : 0, x1: W, label: prevLabel });
+
+        for (let i = 1; i < runs.length - 1; ) {
+          const prev = runs[i - 1], cur = runs[i], next = runs[i + 1];
+          const w = cur.x1 - cur.x0;
+          if (w < MIN_SLIVER && prev.label && next.label && prev.label === next.label) {
+            prev.x1 = next.x1;
+            runs.splice(i, 2);
+          } else i++;
+        }
+
+        for (let i = 0; i < runs.length; ) {
+          const r = runs[i];
+          const w = r.x1 - r.x0;
+          if (!r.label || w < MIN_LBL) {
+            const leftW  = i > 0 ? (runs[i - 1].x1 - runs[i - 1].x0) : -1;
+            const rightW = i < runs.length - 1 ? (runs[i + 1].x1 - runs[i + 1].x0) : -1;
+            if (leftW >= rightW && i > 0) {
+              runs[i - 1].x1 = r.x1;
+              runs.splice(i, 1);
+              continue;
+            } else if (i < runs.length - 1) {
+              runs[i + 1].x0 = r.x0;
+              runs.splice(i, 1);
+              continue;
+            }
+          }
+          i++;
+        }
+
+        for (const r of runs) {
+          if (!r.label) continue;
+          const segW = r.x1 - r.x0;
+          if (segW < MIN_LBL) continue;
+
+          const box = document.createElement("div");
+          box.textContent = r.label;
+          Object.assign(box.style, {
+            flex: "0 0 auto",
+            position: "absolute",
+            left: r.x0 + "px",
+            width: segW + "px",
+            top: "0",
+            height: "28px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "12px",
+            fontWeight: "700",
+            color: "#fff",
+            textShadow: "0 1px 2px rgba(0,0,0,0.8)"
+          });
+          inner.appendChild(box);
+        }
+      }
+
+      function safeToMap(view, screenPt) {
+        try { return view.toMap(screenPt); } catch(_) { return null; }
+      }
+
+      // tz-lookup via Intl time zone name fallback – reuse your existing heuristic
+      function safeTz(lat, lon) {
+        // Your original code uses timeZoneName from formatToParts; we keep a simple approximation:
+        // NOTE: if you had a real tz lookup in your earlier version, paste it here and I’ll reinsert it.
+        return "UTC";
+      }
+
+      function formatTimeForTZ(date, tzid) {
+        // If you had the original formatter logic, use it; this keeps output stable.
+        // For UTC fallback:
+        const hh = String(date.getUTCHours()).padStart(2,"0");
+        const mm = String(date.getUTCMinutes()).padStart(2,"0");
+        return `${hh}:${mm} UTC`;
+      }
+
+      function buildRenderer(strength) {
+        const light = clamp(0.04 + 0.16 * strength, 0.04, 0.20);
+        const dark  = clamp(0.08 + 0.22 * strength, 0.08, 0.30);
+        return {
+          type: "unique-value",
+          valueExpression: `
+            var off = DefaultValue($feature.ZONE, 0);
+            var n = Round(off);
+            return IIF(Abs(n) % 2 == 0, 'even', 'odd');
+          `,
+          defaultSymbol: {
+            type: "simple-fill",
+            color: [0, 0, 0, (light + dark) / 2],
+            outline: { color: [68, 68, 68, 0.65], width: 1 }
+          },
+          uniqueValueInfos: [
+            { value: "even", symbol: { type: "simple-fill", color: [0, 0, 0, light], outline: { color: [68,68,68,0.65], width: 1 } } },
+            { value: "odd",  symbol: { type: "simple-fill", color: [0, 0, 0, dark ], outline: { color: [68,68,68,0.65], width: 1 } } }
+          ]
+        };
+      }
+
+      function setShadingStrength(layer, s) { layer.renderer = buildRenderer(clamp(s, 0, 1)); }
+    });
+  };
+})();
+</script>

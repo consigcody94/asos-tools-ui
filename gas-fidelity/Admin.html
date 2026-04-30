@@ -1,0 +1,775 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>System Status Admin</title>
+    <?!= include('Css'); ?>
+
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #eef3f8;
+        font-family: Arial, sans-serif;
+        color: #16324a;
+        min-height: 100%;
+        overflow-y: auto;
+      }
+
+      .admin-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .admin-header {
+        background: #00467f;
+        color: #fff;
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        box-shadow: 0 2px 10px rgba(0,0,0,.12);
+      }
+
+      .admin-title-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .admin-title {
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.1;
+      }
+
+      .admin-subtitle {
+        font-size: 12px;
+        font-weight: 700;
+        opacity: .95;
+      }
+
+      .admin-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .admin-btn,
+      .admin-link-btn {
+        border: 1px solid rgba(255,255,255,0.45);
+        background: rgba(255,255,255,0.12);
+        color: #fff;
+        border-radius: 8px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .admin-btn:hover,
+      .admin-link-btn:hover {
+        background: rgba(255,255,255,0.22);
+      }
+
+      .admin-content {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        overflow: visible;
+      }
+
+      .admin-status-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .admin-status-text {
+        font-size: 12px;
+        font-weight: 700;
+        color: #35556f;
+      }
+
+      .admin-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .admin-search,
+      .admin-input {
+        min-width: 220px;
+        box-sizing: border-box;
+        padding: 9px 10px;
+        border: 1px solid #c9d9e8;
+        border-radius: 8px;
+        background: #fff;
+        font-size: 13px;
+      }
+
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(180px, 1fr));
+        gap: 12px;
+      }
+
+      .metric-card {
+        background: #fff;
+        border: 1px solid #d8e4ef;
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: 0 4px 14px rgba(0,0,0,.06);
+      }
+
+      .metric-label {
+        font-size: 12px;
+        font-weight: 800;
+        color: #46657e;
+        text-transform: uppercase;
+        letter-spacing: .4px;
+      }
+
+      .metric-value {
+        margin-top: 6px;
+        font-size: 28px;
+        font-weight: 900;
+        line-height: 1;
+        color: #00467f;
+      }
+
+      .admin-panel {
+        background: #fff;
+        border: 1px solid #d8e4ef;
+        border-radius: 12px;
+        box-shadow: 0 4px 14px rgba(0,0,0,.06);
+        overflow: hidden;
+      }
+
+      .admin-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        background: #f5f9fd;
+        border-bottom: 1px solid #dbe8f6;
+        flex-wrap: wrap;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .admin-panel-title {
+        font-size: 15px;
+        font-weight: 800;
+        color: #073b5f;
+      }
+
+      .admin-panel-subtitle {
+        font-size: 12px;
+        font-weight: 700;
+        color: #55748c;
+      }
+
+      .admin-panel-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 24px;
+        font-size: 16px;
+        font-weight: 900;
+        color: #073b5f;
+      }
+
+      .admin-panel-body {
+        padding: 14px 16px;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        max-height: 320px;
+      }
+
+      .history-wrap {
+        max-height: 420px;
+      }
+
+      .admin-panel.collapsed .admin-panel-body,
+      .admin-panel.collapsed .table-wrap {
+        display: none;
+      }
+
+      .admin-panel.collapsed .admin-panel-header {
+        border-bottom: none;
+      }
+
+      table.admin-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .admin-table th,
+      .admin-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e4edf5;
+        text-align: left;
+        white-space: nowrap;
+      }
+
+      .admin-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #eef5fb;
+        color: #0b3a5c;
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .3px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .admin-table tbody tr:hover {
+        background: #f8fbfe;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 68px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .25px;
+      }
+
+      .status-pill.active {
+        background: rgba(0, 128, 0, .12);
+        color: #0d6b1f;
+        border: 1px solid rgba(0, 128, 0, .22);
+      }
+
+      .status-pill.stale {
+        background: rgba(160, 0, 0, .10);
+        color: #8b1d1d;
+        border: 1px solid rgba(160, 0, 0, .16);
+      }
+
+      .status-pill.admin {
+        background: rgba(0, 70, 127, .12);
+        color: #00467f;
+        border: 1px solid rgba(0, 70, 127, .18);
+      }
+
+      .danger-btn {
+        border: 1px solid #c74a4a;
+        background: #fff5f5;
+        color: #a12626;
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .empty-state,
+      .error-state {
+        padding: 18px 14px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .error-state {
+        color: #a12626;
+        background: #fff5f5;
+      }
+
+      @media (max-width: 900px) {
+        .metrics-grid {
+          grid-template-columns: 1fr;
+        }
+        .table-wrap {
+          max-height: none;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="admin-shell">
+      <div class="admin-header">
+        <div class="admin-title-wrap">
+          <div class="admin-title">System Status Admin</div>
+          <div class="admin-subtitle">Restricted access</div>
+        </div>
+
+        <div class="admin-header-actions">
+          <a class="admin-link-btn" href="<?= ScriptApp.getService().getUrl(); ?>">Main Map</a>
+          <button class="admin-btn" type="button" onclick="refreshAdminData()">Refresh</button>
+          <button class="admin-btn" type="button" onclick="resetMaxUsers()">Reset Max</button>
+        </div>
+      </div>
+
+      <div class="admin-content">
+        <div class="admin-panel" data-panel-key="summary">
+          <div class="admin-panel-header" data-toggle-panel="summary" aria-expanded="true">
+            <div>
+              <div class="admin-panel-title">Summary</div>
+              <div class="admin-panel-subtitle">Search and current usage totals</div>
+            </div>
+            <div class="admin-panel-toggle" data-toggle-icon="summary">▾</div>
+          </div>
+          <div class="admin-panel-body">
+            <div class="admin-status-row">
+              <div class="admin-status-text" id="adminLastRefreshed">Loading…</div>
+              <div class="admin-controls">
+                <input id="adminSearch" class="admin-search" type="search" placeholder="Filter tables by email, status, source, or event…">
+              </div>
+            </div>
+
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <div class="metric-label">Current Users</div>
+                <div class="metric-value" id="metricCurrentUsers">0</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Unique Users</div>
+                <div class="metric-value" id="metricUniqueUsers">0</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Max Concurrent Users</div>
+                <div class="metric-value" id="metricMaxUsers">0</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-panel" data-panel-key="adminAccess">
+          <div class="admin-panel-header" data-toggle-panel="adminAccess" aria-expanded="true">
+            <div>
+              <div class="admin-panel-title">Admin Access</div>
+              <div class="admin-panel-subtitle">Manage who can open this page</div>
+            </div>
+            <div class="admin-panel-toggle" data-toggle-icon="adminAccess">▾</div>
+          </div>
+          <div class="admin-panel-body">
+            <div class="admin-controls" style="margin-bottom:12px;">
+              <input id="newAdminEmail" class="admin-input" type="email" placeholder="Add admin email">
+              <button class="admin-btn" type="button" onclick="addAdmin(event)">Add Admin</button>
+            </div>
+            <div class="table-wrap">
+              <table class="admin-table" id="adminAccessTable">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Added UTC</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="adminAccessTbody">
+                  <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-panel" data-panel-key="activeUsers">
+          <div class="admin-panel-header" data-toggle-panel="activeUsers" aria-expanded="true">
+            <div>
+              <div class="admin-panel-title">Active Users</div>
+              <div class="admin-panel-subtitle">Currently active within timeout window</div>
+            </div>
+            <div class="admin-panel-toggle" data-toggle-icon="activeUsers">▾</div>
+          </div>
+          <div class="table-wrap">
+            <table class="admin-table" id="activeUsersTable">
+              <thead>
+                <tr>
+                  <th data-table="active" data-sort="email">Email</th>
+                  <th data-table="active" data-sort="lastSeen">Last Seen UTC</th>
+                  <th data-table="active" data-sort="ageSeconds">Age (min)</th>
+                  <th data-table="active" data-sort="status">Status</th>
+                </tr>
+              </thead>
+              <tbody id="activeUsersTbody">
+                <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="admin-panel" data-panel-key="allUsers">
+          <div class="admin-panel-header" data-toggle-panel="allUsers" aria-expanded="true">
+            <div>
+              <div class="admin-panel-title">All Tracked Users</div>
+              <div class="admin-panel-subtitle">Latest row per user from ActiveUsers</div>
+            </div>
+            <div class="admin-panel-toggle" data-toggle-icon="allUsers">▾</div>
+          </div>
+          <div class="table-wrap">
+            <table class="admin-table" id="allUsersTable">
+              <thead>
+                <tr>
+                  <th data-table="all" data-sort="email">Email</th>
+                  <th data-table="all" data-sort="lastSeen">Last Seen UTC</th>
+                  <th data-table="all" data-sort="ageSeconds">Age (min)</th>
+                  <th data-table="all" data-sort="status">Status</th>
+                </tr>
+              </thead>
+              <tbody id="allUsersTbody">
+                <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="admin-panel" data-panel-key="history">
+          <div class="admin-panel-header" data-toggle-panel="history" aria-expanded="true">
+            <div>
+              <div class="admin-panel-title">Historical Activity</div>
+              <div class="admin-panel-subtitle">Append-only heartbeat history</div>
+            </div>
+            <div class="admin-panel-toggle" data-toggle-icon="history">▾</div>
+          </div>
+          <div class="table-wrap history-wrap">
+            <table class="admin-table" id="historyTable">
+              <thead>
+                <tr>
+                  <th data-table="history" data-sort="timestampUtc">Timestamp UTC</th>
+                  <th data-table="history" data-sort="email">Email</th>
+                  <th data-table="history" data-sort="eventType">Event</th>
+                  <th data-table="history" data-sort="activeCount">Active Count</th>
+                  <th data-table="history" data-sort="source">Source</th>
+                </tr>
+              </thead>
+              <tbody id="historyTbody">
+                <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let __activeRows = [];
+      let __allRows = [];
+      let __historyRows = [];
+      let __adminAccessRows = [];
+
+      let __sortState = {
+        active:  { key: "email", dir: "asc" },
+        all:     { key: "email", dir: "asc" },
+        history: { key: "timestampUtc", dir: "desc" }
+      };
+
+      function escapeHtml_(s) {
+        return String(s ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function formatAgeMinutes_(ageSeconds) {
+        const sec = Number(ageSeconds);
+        if (!Number.isFinite(sec)) return "--";
+        return (sec / 60).toFixed(1);
+      }
+
+      function setMetrics_(stats) {
+        document.getElementById("metricCurrentUsers").textContent = Number(stats?.currentUsers || 0);
+        document.getElementById("metricUniqueUsers").textContent = Number(stats?.uniqueUsers || 0);
+        document.getElementById("metricMaxUsers").textContent = Number(stats?.maxConcurrentUsers || 0);
+      }
+
+      function getSearch_() {
+        return String(document.getElementById("adminSearch")?.value || "").trim().toLowerCase();
+      }
+
+      function applyFilterSort_(rows, tableName) {
+        const q = getSearch_();
+        let out = (rows || []).slice();
+
+        if (q) {
+          out = out.filter(r => Object.values(r || {}).some(v =>
+            String(v ?? "").toLowerCase().includes(q)
+          ));
+        }
+
+        const sort = __sortState[tableName];
+        const dir = sort.dir === "desc" ? -1 : 1;
+        const key = sort.key;
+
+        out.sort((a, b) => {
+          let av = a?.[key];
+          let bv = b?.[key];
+
+          if (key === "ageSeconds" || key === "activeCount") {
+            av = Number.isFinite(Number(av)) ? Number(av) : 999999999;
+            bv = Number.isFinite(Number(bv)) ? Number(bv) : 999999999;
+            return (av - bv) * dir;
+          }
+
+          av = String(av ?? "").toLowerCase();
+          bv = String(bv ?? "").toLowerCase();
+          return av.localeCompare(bv) * dir;
+        });
+
+        return out;
+      }
+
+      function renderUserRows_(tbodyId, rows) {
+        const tbody = document.getElementById(tbodyId);
+
+        if (!rows.length) {
+          tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No matching users found.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = rows.map(r => {
+          const status = String(r.status || "STALE").toUpperCase();
+          const pillClass = status === "ACTIVE" ? "active" : "stale";
+
+          return `
+            <tr>
+              <td>${escapeHtml_(r.email || "")}</td>
+              <td>${escapeHtml_(r.lastSeen || "")}</td>
+              <td>${escapeHtml_(formatAgeMinutes_(r.ageSeconds))}</td>
+              <td><span class="status-pill ${pillClass}">${escapeHtml_(status)}</span></td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      function renderHistoryRows_() {
+        const rows = applyFilterSort_(__historyRows, "history");
+        const tbody = document.getElementById("historyTbody");
+
+        if (!rows.length) {
+          tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No matching history rows found.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = rows.map(r => `
+          <tr>
+            <td>${escapeHtml_(r.timestampUtc || "")}</td>
+            <td>${escapeHtml_(r.email || "")}</td>
+            <td>${escapeHtml_(r.eventType || "")}</td>
+            <td>${escapeHtml_(r.activeCount ?? "")}</td>
+            <td>${escapeHtml_(r.source || "")}</td>
+          </tr>
+        `).join("");
+      }
+
+      function renderAdminAccessRows_() {
+        const q = getSearch_();
+        let rows = (__adminAccessRows || []).slice();
+
+        if (q) {
+          rows = rows.filter(r =>
+            String(r.email || "").toLowerCase().includes(q) ||
+            String(r.role || "").toLowerCase().includes(q) ||
+            String(r.addedUtc || "").toLowerCase().includes(q)
+          );
+        }
+
+        const tbody = document.getElementById("adminAccessTbody");
+        if (!rows.length) {
+          tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No matching admin access rows found.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = rows.map(r => `
+          <tr>
+            <td>${escapeHtml_(r.email || "")}</td>
+            <td><span class="status-pill admin">${escapeHtml_(r.role || "ADMIN")}</span></td>
+            <td>${escapeHtml_(r.addedUtc || "")}</td>
+            <td><button class="danger-btn" type="button" onclick="removeAdmin('${String(r.email || "").replace(/'/g, "\\'")}')">Remove</button></td>
+          </tr>
+        `).join("");
+      }
+
+      function renderTables_() {
+        renderUserRows_("activeUsersTbody", applyFilterSort_(__activeRows, "active"));
+        renderUserRows_("allUsersTbody", applyFilterSort_(__allRows, "all"));
+        renderHistoryRows_();
+        renderAdminAccessRows_();
+      }
+
+      function refreshAdminData() {
+        document.getElementById("adminLastRefreshed").textContent = "Refreshing…";
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            __activeRows = Array.isArray(result?.activeUsers) ? result.activeUsers : [];
+            __allRows = Array.isArray(result?.allUsers) ? result.allUsers : [];
+            __historyRows = Array.isArray(result?.history) ? result.history : [];
+            __adminAccessRows = Array.isArray(result?.adminAccess) ? result.adminAccess : [];
+            setMetrics_(result?.stats || {});
+            renderTables_();
+            document.getElementById("adminLastRefreshed").textContent =
+              "Last refreshed: " + new Date().toLocaleString();
+          })
+          .withFailureHandler(function(err) {
+            const msg = escapeHtml_(err && err.message ? err.message : err);
+            document.getElementById("activeUsersTbody").innerHTML =
+              `<tr><td colspan="4" class="error-state">Error: ${msg}</td></tr>`;
+            document.getElementById("allUsersTbody").innerHTML =
+              `<tr><td colspan="4" class="error-state">Error: ${msg}</td></tr>`;
+            document.getElementById("historyTbody").innerHTML =
+              `<tr><td colspan="5" class="error-state">Error: ${msg}</td></tr>`;
+            document.getElementById("adminAccessTbody").innerHTML =
+              `<tr><td colspan="4" class="error-state">Error: ${msg}</td></tr>`;
+            document.getElementById("adminLastRefreshed").textContent = "Refresh failed";
+          })
+          .getAdminDashboardData();
+      }
+
+      function addAdmin(evt) {
+        if (evt) evt.stopPropagation();
+        const email = String(document.getElementById("newAdminEmail").value || "").trim();
+        if (!email) {
+          alert("Enter an email address.");
+          return;
+        }
+
+        google.script.run
+          .withSuccessHandler(function() {
+            document.getElementById("newAdminEmail").value = "";
+            refreshAdminData();
+          })
+          .withFailureHandler(function(err) {
+            alert("Add admin failed: " + (err && err.message ? err.message : err));
+          })
+          .addAdminAccess(email);
+      }
+
+      function removeAdmin(email) {
+        if (!confirm("Remove admin access for " + email + "?")) return;
+
+        google.script.run
+          .withSuccessHandler(function() {
+            refreshAdminData();
+          })
+          .withFailureHandler(function(err) {
+            alert("Remove admin failed: " + (err && err.message ? err.message : err));
+          })
+          .removeAdminAccess(email);
+      }
+
+      function resetMaxUsers() {
+        if (!confirm("Reset max concurrent users to 0?")) return;
+
+        google.script.run
+          .withSuccessHandler(function() {
+            refreshAdminData();
+          })
+          .withFailureHandler(function(err) {
+            alert("Reset max failed: " + (err && err.message ? err.message : err));
+          })
+          .resetActiveUserMaxConcurrent();
+      }
+
+      function initAdminCollapsibles_() {
+        document.querySelectorAll(".admin-panel[data-panel-key]").forEach(panel => {
+          const key = panel.getAttribute("data-panel-key");
+          const header = panel.querySelector(`.admin-panel-header[data-toggle-panel="${key}"]`);
+          const icon = panel.querySelector(`[data-toggle-icon="${key}"]`);
+          if (!key || !header) return;
+
+          const storageKey = "adminPanelCollapsed_" + key;
+
+          const applyState = (collapsed) => {
+            panel.classList.toggle("collapsed", !!collapsed);
+            header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            if (icon) icon.textContent = collapsed ? "▸" : "▾";
+          };
+
+          let collapsed = false;
+          try {
+            collapsed = localStorage.getItem(storageKey) === "true";
+          } catch (e) {}
+
+          applyState(collapsed);
+
+          header.addEventListener("click", function(evt) {
+            if (evt.target.closest("button, a, input, select, textarea")) return;
+            const next = !panel.classList.contains("collapsed");
+            applyState(next);
+            try {
+              localStorage.setItem(storageKey, String(next));
+            } catch (e) {}
+          });
+        });
+      }
+
+      document.addEventListener("click", function(evt) {
+        if (evt.target.closest("button, a, input, select, textarea")) {
+          evt.stopPropagation();
+        }
+      }, true);
+
+      document.getElementById("adminSearch").addEventListener("input", renderTables_);
+
+      document.querySelectorAll("th[data-table][data-sort]").forEach(th => {
+        th.addEventListener("click", function(evt) {
+          evt.stopPropagation();
+          const tableName = this.getAttribute("data-table");
+          const key = this.getAttribute("data-sort");
+          const current = __sortState[tableName];
+
+          if (current.key === key) {
+            current.dir = current.dir === "asc" ? "desc" : "asc";
+          } else {
+            current.key = key;
+            current.dir = "asc";
+          }
+
+          renderTables_();
+        });
+      });
+
+      let __adminAutoRefreshTimer = null;
+      const ADMIN_AUTO_REFRESH_MS = 60 * 1000; // 60 seconds
+
+      function startAdminAutoRefresh_() {
+        if (__adminAutoRefreshTimer) {
+          clearInterval(__adminAutoRefreshTimer);
+        }
+
+        __adminAutoRefreshTimer = setInterval(function() {
+          if (!document.hidden) {
+            refreshAdminData();
+          }
+        }, ADMIN_AUTO_REFRESH_MS);
+      }
+
+      window.addEventListener("load", function() {
+        initAdminCollapsibles_();
+        refreshAdminData();
+        startAdminAutoRefresh_();
+      });
+    </script>
+  </body>
+</html>

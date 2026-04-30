@@ -1,0 +1,1335 @@
+<style>
+  /* ===== Base layout ===== */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: sans-serif;
+}
+
+#app-container {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column; /* header + banner + main */
+  min-height: 0;
+}
+
+/* ===== Header ===== */
+#header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  min-height:56px;
+  padding:6px 14px;
+  gap:14px;
+  flex:0 0 auto;
+  position:relative;
+  background:#00467f;
+  color:#fff;
+  z-index:10;
+  overflow:hidden;
+}
+
+#header .hdr-left{
+  flex:0 0 280px;
+  min-width:280px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:center;
+  text-align:left;
+  white-space:nowrap;
+  line-height:1.1;
+}
+
+#header .hdr-center{
+  flex:1 1 auto;
+  min-width:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+}
+
+#header .hdr-right{
+  flex:0 0 360px;
+  min-width:360px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  justify-content:center;
+  text-align:right;
+  gap:2px;
+  white-space:nowrap;
+}
+
+#header .hdr-right-top{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap:nowrap;
+  white-space:nowrap;
+}
+
+#header .hdr-title{
+  font-weight:800;
+  font-size:18px;
+  line-height:1.05;
+  letter-spacing:.2px;
+}
+
+#current-time.hdr-current-time{
+  font-size:14px;
+  font-weight:800;
+  line-height:1.1;
+  margin-bottom:2px;
+}
+
+#last-updated.hdr-last-updated{
+  font-size:12px;
+  font-weight:700;
+  line-height:1.1;
+  opacity:.98;
+}
+
+#refresh-timer{
+  font-size:12px;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+#header .hdr-load-status{
+  font-size:12px;
+  font-weight:700;
+  line-height:1.1;
+  min-height:14px;
+  opacity:.95;
+  white-space:nowrap;
+}
+
+@media (max-width: 1200px){
+  #header .hdr-left{
+    flex-basis:250px;
+    min-width:250px;
+  }
+
+  #header .hdr-right{
+    flex-basis:330px;
+    min-width:330px;
+  }
+
+  #header .hdr-title{
+    font-size:16px;
+  }
+}
+
+@media (max-width: 980px){
+  #header{
+    flex-wrap:wrap;
+    row-gap:4px;
+  }
+
+  #header .hdr-left,
+  #header .hdr-center,
+  #header .hdr-right{
+    flex:1 1 100%;
+    min-width:0;
+  }
+
+  #header .hdr-left{
+    align-items:flex-start;
+    text-align:left;
+  }
+
+  #header .hdr-center{
+    justify-content:center;
+  }
+
+  #header .hdr-right{
+    align-items:flex-end;
+    text-align:right;
+  }
+}
+
+/* Header buttons (Help + Menu) */
+#aboutHelpBtn,
+#menuBtn{
+  border:1px solid rgba(255,255,255,0.55);
+  background:rgba(255,255,255,0.12);
+  color:#fff;
+  border-radius:8px;
+  padding:4px 10px;
+  cursor:pointer;
+  font-weight:800;
+  font-size:12px;
+  line-height:1;
+  text-decoration:none;
+  display:inline-flex;
+  align-items:center;
+}
+
+#aboutHelpBtn:hover,
+#menuBtn:hover{
+  background:rgba(255,255,255,0.22);
+}
+
+
+/* banner row */
+#banner-container {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 9;
+  width: 100%;
+}
+
+
+
+/* main (map + overlays) MUST flex */
+#mainContainer {
+  flex: 1 1 auto;
+  min-height: 0;      /* CRITICAL so viewDiv can size in flex layouts */
+  position: relative;
+  overflow: hidden;
+}
+
+/* map fills the main container */
+#viewDiv {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+  /* --- Form elements inside the sidebar should align with filter-header boxes --- */
+  #sidebar label { 
+    display:block; 
+    margin-top: 8px;           /* slightly tighter than 10px */
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #333;
+  }
+
+  /* Make search inputs the SAME visual width as the collapsible header boxes */
+  #sidebar input[type="text"],
+  #sidebar input[type="search"],
+  #sidebar select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 6px;          /* match .filter-header padding */
+    margin-top: 0;
+    border: 1px solid #cfe3f4; /* match .filter-header border tone */
+    border-radius: 4px;        /* match .filter-header radius */
+    background: #fff;
+    font-size: 12px;
+  }
+
+
+  /* ===== LEFT SIDEBAR (overlay) ===== */
+  #sidebar {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    width:310px;
+    background:#f9f9f9; padding:10px; border-right:1px solid #ccc;
+    box-sizing:border-box; overflow-y:auto; z-index:3;
+    transition: transform .25s ease;
+    transform: translateX(0);
+  }
+  /* Collapsed = slide off-screen; does not change map size */
+  #mainContainer.sidebar-collapsed #sidebar { transform: translateX(-100%); }
+
+  /* LEFT toggle sits flush to visible edge */
+  #toggleSidebarBtn {
+    position:absolute; top:0; bottom:0;
+    left:310px;                 /* aligned with sidebar edge when open */
+    width:20px;
+    background:#0079c1; color:#fff;
+    border:none; cursor:pointer; z-index:6;
+    transition:left .25s ease;
+    font-weight:bold;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+  #mainContainer.sidebar-collapsed #toggleSidebarBtn { left:0; } /* flush to viewport edge */
+
+/* section labels (one consistent rule) */
+.subsection-label {
+  font-weight: 600;
+  margin: 12px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid #ddd;
+  color: #333;
+}
+
+/* no line above the very first label in the Filters panel */
+#filters .subsection-label:first-child {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+
+  /* ===== RIGHT SIDEBAR (overlay) ===== */
+  #rightSidebar {
+    position:absolute; top:0; right:0; bottom:0;
+    width:310px; height:auto;
+    background:rgba(255,255,255,0.95);
+    border-left:1px solid #ccc; padding:10px;
+    box-sizing:border-box; overflow-y:auto; z-index:3;
+    transition: transform .25s ease;
+    transform: translateX(0);
+  }
+  #mainContainer.right-sidebar-collapsed #rightSidebar { transform: translateX(100%); }
+
+  /* RIGHT toggle sits flush to visible edge */
+  #toggleRightSidebarBtn {
+    position:absolute; top:0; bottom:0;
+    right:310px;               /* aligned with sidebar edge when open */
+    width:20px;
+    background:#0079c1; color:#fff;
+    border:none; cursor:pointer; z-index:6;
+    transition:right .25s ease;
+    font-weight:bold;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+    #mainContainer.right-sidebar-collapsed #toggleRightSidebarBtn { right:0; } /* flush to viewport edge */
+
+  /* ===== In-map clock rail ===== */
+  #mapClockBar{
+    position:absolute;
+    top:8px;
+    left:360px;
+    right:332px;
+    z-index:4;
+    display:flex;
+    align-items:flex-start;
+    gap:6px;
+    pointer-events:none;
+  }
+
+  #mainContainer.sidebar-collapsed #mapClockBar{
+    left:58px;
+  }
+
+  #mainContainer.right-sidebar-collapsed #mapClockBar{
+    right:22px;
+  }
+
+  #mainContainer.sidebar-collapsed.right-sidebar-collapsed #mapClockBar{
+    left:58px;
+    right:22px;
+  }
+
+  #mapClockBar,
+  #mapClockBar *{
+    box-sizing:border-box;
+  }
+
+  .map-clock-toggle,
+  .map-clock-body,
+  .map-clock-chip{
+    pointer-events:auto;
+  }
+
+  .map-clock-toggle{
+    flex:0 0 auto;
+    width:26px;
+    height:26px;
+    border:1px solid #cfe3f4;
+    border-radius:8px;
+    background:#eef5fb;
+    color:#00467f;
+    cursor:pointer;
+    font-size:14px;
+    font-weight:800;
+    line-height:1;
+    box-shadow:0 2px 6px rgba(0,0,0,0.12);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+
+  .map-clock-toggle:hover{
+    background:#e3f0fa;
+  }
+
+  .map-clock-body{
+    flex:1 1 auto;
+    display:flex;
+    align-items:stretch;
+    gap:6px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding:0 2px 2px 0;
+    scrollbar-width:thin;
+  }
+
+  .map-clock-bar.collapsed .map-clock-body{
+    display:none;
+  }
+
+  .map-clock-chip{
+    min-width:122px;
+    padding:5px 8px 4px;
+    border-radius:8px;
+    border:1px solid #cfe3f4;
+    background:#eef5fb;
+    color:#0b3a63;
+    text-align:center;
+    white-space:nowrap;
+    box-shadow:0 2px 6px rgba(0,0,0,0.10);
+  }
+
+  .map-clock-label{
+    display:block;
+    font-size:11px;
+    font-weight:800;
+    line-height:1.05;
+    margin-bottom:2px;
+  }
+
+  .map-clock-value{
+    display:block;
+    font-size:10px;
+    font-weight:700;
+    line-height:1.1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing:.1px;
+  }
+
+  @media (max-width: 1500px){
+    #mapClockBar{
+      left:340px;
+      right:320px;
+    }
+
+    #mainContainer.sidebar-collapsed #mapClockBar{
+      left:58px;
+    }
+
+    #mainContainer.right-sidebar-collapsed #mapClockBar{
+      right:16px;
+    }
+
+    .map-clock-chip{
+      min-width:112px;
+      padding:4px 7px 4px;
+    }
+  }
+
+  @media (max-width: 1100px){
+    .map-clock-chip{
+      min-width:104px;
+    }
+
+    .map-clock-label{
+      font-size:10px;
+    }
+
+    .map-clock-value{
+      font-size:9px;
+    }
+  }
+
+  .right-content { font-size:14px; }
+
+  /* ===== Legends / tables ===== */
+  .legend-container { font-size:14px; }
+  .legend-item { display:flex; align-items:center; gap:6px; }
+  .legend-color { width:12px; height:12px; display:inline-block; border-radius:2px; }
+
+  #rightSidebar .legend-container.legend-grid {
+    display:grid; grid-template-columns:1fr 1fr; column-gap:12px; row-gap:6px; align-items:center;
+  }
+
+  /* Down table */
+  #downTable{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:5px;
+  }
+  #downTable td{
+    padding:4px 6px;
+    border-bottom:1px solid #ccc;
+  }
+  #downTable th{
+    text-align:left;
+    border-bottom:2px solid #aaa;
+    padding-bottom:4px;
+    margin-top:20px;
+  }
+
+
+  #downTable tr.down-group-header td { background: rgba(255,255,255,0.08); }
+  #downTable tr.down-group-header:hover td { background: rgba(255,255,255,0.12); }
+  #downTable .chev { display:inline-block; width:18px; }
+
+  /* Mini legend block */
+  .mini-legend { border:1px solid #ddd; border-radius:6px; padding:6px; background:#fff; max-height:180px; overflow:auto; font-size:12px; }
+  .mini-legend-title { font-weight:600; margin-bottom:4px; }
+  .mini-legend .esri-legend__service, .mini-legend .esri-legend__layer { margin:0; }
+  .mini-legend .esri-legend__layer-body { padding:0; }
+  .mini-legend .esri-legend__service-caption, .mini-legend .esri-legend__layer-caption { display:none; }
+  .mini-legend .esri-legend__symbol { transform:scale(.9); transform-origin:left center; }
+
+  /* === WWA Legend: collapsible header + scrollable body === */
+  #wwaLegendContainer.wwa-mini-legend{
+    /* header should not scroll; move scrolling to body */
+    max-height:none;
+    overflow:visible;
+    padding:6px;
+  }
+
+  #wwaLegendHeader.wwa-legend-header{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:8px;
+    font-weight:700;
+    font-size:12px;
+    padding:4px 6px;
+    border:1px solid #cfe3f4;
+    border-radius:4px;
+    background:#eef5fb;
+    cursor:pointer;
+    user-select:none;
+    margin-bottom:6px;
+  }
+  #wwaLegendHeader.wwa-legend-header:hover{ background:#e3f0fa; }
+  #wwaLegendHeader .chev{ font-size:12px; }
+
+  #wwaLegendBody.wwa-legend-body{
+    max-height:180px;     /* keeps the scroll you wanted */
+    overflow:auto;
+    padding-right:2px;
+  }
+
+  #wwaLegendContainer.collapsed #wwaLegendBody{ display:none; }
+  #wwaLegendContainer.collapsed #wwaLegendHeader .chev{ transform:rotate(-90deg); }
+
+
+  /* Collapse headers */
+  .collapse-content { margin-top:6px; }
+  .filter-header {
+    display:flex; justify-content:space-between; align-items:center;
+    font-weight:600; font-size:12px; background:#eef5fb; border:1px solid #cfe3f4;
+    border-radius:4px; padding:5px 6px; margin:6px 0 4px; cursor:pointer; user-select:none;
+  }
+  .filter-header:hover { background:#e3f0fa; }
+  .filter-header .chev { font-size:12px; }
+
+
+  /* Radar CORS badge */
+  .cors-badge{
+    display:inline-block;
+    margin-left:6px;
+    padding:1px 6px;
+    border-radius:999px;
+    border:1px solid rgba(176, 0, 32, .35);
+    background: rgba(176, 0, 32, .10);
+    color:#b00020;
+    font-weight:700;
+    font-size:11px;
+    line-height:1.4;
+    white-space:nowrap;
+  }
+
+
+  /* === Panel divider (match Legend ↔ Status Totals) === */
+  hr.panel-divider{
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 12px 0;
+  }
+
+
+  /* === Nested look for sections inside the master Overlays container === */
+  /* Indent the nested overlay headers */
+  #overlaysSection > .filter-header{
+    margin-left: 10px;
+    background: #f5f9fd;      /* slightly lighter than normal headers */
+    border-color: #dbe8f6;    /* lighter border */
+  }
+  #overlaysSection > .filter-header:hover{
+    background:#eef5fb;       /* keep hover consistent */
+  }
+
+  /* Indent the nested overlay content and add a subtle left guide line */
+  #overlaysSection > .collapse-content{
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 2px solid #e3eef8;
+  }
+
+  /* Keep the master Overlays header flush (not indented) */
+  #overlaysHeader { margin-left: 0; }
+
+  /* === Filters nesting (indent items under Filters) === */
+  /* Indent everything inside the Filters collapsible body */
+  #filtersSection{
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 2px solid #e3eef8;
+  }
+
+  /* Keep the master Filters header flush (not indented) */
+  #filtersHeader { margin-left: 0; }
+
+  /* Optional: make nested filter subsection headers look like nested subsections */
+  #filtersSection > .filter-header{
+    background: #f5f9fd;
+    border-color: #dbe8f6;
+  }
+  #filtersSection > .filter-header:hover{
+    background:#eef5fb;
+  }
+
+
+  /* === MAP/UI nesting (indent items under MAP/UI) === */
+  /* Indent everything inside the MAP/UI collapsible body */
+  #mapSection{
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 2px solid #e3eef8;
+  }
+
+  /* Keep the master MAP/UI header flush (not indented) */
+  #mapHeader { margin-left: 0; }
+
+  /* Make UI Settings header look like a nested subsection (similar to overlays subsections) */
+  #settingsHeader{
+    background: #f5f9fd;
+    border-color: #dbe8f6;
+  }
+  #settingsHeader:hover{
+    background:#eef5fb;
+  }
+
+
+  /* === Nested look for sections inside the master Filters container === */
+  /* Indent the nested filter subsection headers (Advanced Search, Regions, Office Type, Programs) */
+  #filtersSection > .filter-header{
+    margin-left: 10px;
+    background: #f5f9fd;      /* slightly lighter than normal headers */
+    border-color: #dbe8f6;    /* lighter border */
+  }
+  #filtersSection > .filter-header:hover{
+    background:#eef5fb;
+  }
+
+  /* Indent the nested filter subsection content and add a subtle left guide line */
+  #filtersSection > .collapse-content{
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 2px solid #e3eef8;
+  }
+
+  /* Keep the master Filters header flush (not indented) */
+  #filtersHeader { margin-left: 0; }
+
+
+  /* Optional: spacing helper for overlay rows (CWSU, etc.) */
+  .overlay-row { margin-top: 6px; }
+
+    #radarSection, #wwaSection, #wfoSection, #rfcSection, #cwsuSection, #mccSection, #regSection { margin-bottom:8px; }
+
+
+
+
+
+/* ===== Tighten left filter spacing to match Regions ===== */
+
+#officeTypeCheckboxes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 14px;
+  row-gap: 2px;
+  padding: 4px 6px;
+}
+
+
+/* Make each checkbox row compact */
+#officeTypeCheckboxes label,
+#regionCheckboxes label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;              /* kills the extra vertical gaps */
+  padding: 0;             /* kills the extra vertical gaps */
+  line-height: 1.15;      /* tighter like Regions */
+  font-size: 12px;
+}
+
+/* Keep checkboxes from adding default spacing */
+#officeTypeCheckboxes input[type="checkbox"],
+
+
+/* Optional: tighten section bodies if they have extra padding */
+#officeTypeSection,
+#programsSection,
+#regionCheckboxes {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+
+
+  /* ===== Esri popup sizing (no map padding) ===== */
+  /* Keep popup readable without pushing map; prevents overflow under panels for typical cases */
+  #viewDiv .esri-popup--is-docked .esri-popup__container {
+    max-width: 320px !important;
+  }
+  /* Height safety for popups */
+  .esri-popup__main-container { max-height:72vh !important; }
+  .esri-popup__content { max-height:none !important; overflow-y:visible !important; }
+  .esri-popup__container { max-height:72vh !important; }
+  @media (min-height:760px) {
+    .esri-popup__main-container, .esri-popup__container { max-height:80vh !important; }
+  }
+  /* Hide built-in dock/collapse buttons since we’re docking by default */
+  .esri-popup__button--dock,
+  .esri-popup__button--collapse { display:none !important; }
+
+
+/* Right sidebar legend block */
+.legend-block {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.program-legend-grid{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+.program-legend-item{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.program-legend-badge{
+  width: 18px;
+  height: 18px;
+  border: 1px solid #333;
+  border-radius: 50%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1;
+  background:#f5f5f5;
+}
+
+
+/* Make sure the map truly touches the edges */
+#viewDiv { z-index: 1; }                       /* sits under toggles/panels */
+#viewDiv .esri-view-root { padding: 0 !important; }  /* REMOVE built-in gutters */
+
+/* keeps layout consistent when JS collapses the section */
+.is-collapsed { display: none !important; }
+
+/* When a sidebar is collapsed, also hide its border so no 1px stripe remains */
+#mainContainer.sidebar-collapsed #sidebar { border-right-color: transparent; }
+#mainContainer.right-sidebar-collapsed #rightSidebar { border-left-color: transparent; }
+
+/* Just in case any default button margins sneak in */
+#toggleSidebarBtn, #toggleRightSidebarBtn { margin: 0; }
+
+/* Remove Esri’s default 15px margins so UI hugs the padded edge */
+#viewDiv .esri-ui .esri-component { margin: 0 !important; }
+
+/* Also remove margin around the docked popup container,
+   but push it slightly down so it does not sit under the clock bar */
+#viewDiv .esri-popup--is-docked .esri-popup__main-container {
+  margin: 44px 0 0 0 !important;
+}
+
+/* Remove default Esri UI margins so controls hug the padded edge */
+#viewDiv .esri-ui-top-left .esri-component,
+#viewDiv .esri-ui-top-right .esri-component,
+#viewDiv .esri-ui-bottom-left .esri-component,
+#viewDiv .esri-ui-bottom-right .esri-component {
+  margin: 0 !important;
+}
+
+/* Docked popup width = 225px */
+#viewDiv .esri-popup--is-docked .esri-popup__container {
+  max-width: 225px !important;
+  width: 225px !important;
+}
+
+/* (Optional) hide the little popup pointer while docked */
+#viewDiv .esri-popup--is-docked .esri-popup__pointer {
+  display: none !important;
+}
+
+/* Remove ALL Esri corner padding + component margins so UI hugs padded edges */
+#viewDiv .esri-ui .esri-ui-corner { padding: 0 !important; }
+#viewDiv .esri-ui .esri-component   { margin: 0 !important; }
+
+/* Force the popup narrower (works for docked & floating) */
+#viewDiv .esri-popup__main-container {
+  width: 225px !important;
+  max-width: 225px !important;
+  min-width: 225px !important; /* override Esri's default min-width */
+}
+
+
+#viewDiv .esri-ui .esri-ui-corner { padding: 0 !important; }
+#viewDiv .esri-ui .esri-component { margin: 0 !important; }
+
+/* Remove Esri UI corner gutter entirely */
+#viewDiv .esri-ui {
+  --esri-ui-corner-offset: 0px !important;   /* kills the internal 10–15px offset */
+}
+
+/* Zero all corner padding */
+#viewDiv .esri-ui .esri-ui-corner {
+  padding: 0 !important;
+}
+
+/* Zero per-component margins (zoom, scalebar, etc.) */
+#viewDiv .esri-ui .esri-component {
+  margin: 0 !important;
+}
+
+/* Extra belt-and-suspenders: target the specific corner the zoom lives in */
+#viewDiv .esri-ui-top-left,
+#viewDiv .esri-ui-bottom-left,
+#viewDiv .esri-ui-top-right,
+#viewDiv .esri-ui-bottom-right {
+  padding: 0 !important;
+}
+
+/* Kill ALL corner offsets/margins/padding for UI (esp. zoom) */
+#viewDiv,
+#viewDiv .esri-view-root,
+#viewDiv .esri-ui-root,
+#viewDiv .esri-ui {
+  --esri-ui-corner-offset: 0px !important;
+}
+
+/* No transforms/padding on corner containers */
+#viewDiv .esri-ui .esri-ui-corner {
+  padding: 0 !important;
+  transform: none !important;
+}
+
+/* Zero per-component margins; target zoom explicitly too */
+#viewDiv .esri-ui .esri-component,
+#viewDiv .esri-ui .esri-component.esri-zoom {
+  margin: 0 !important;
+}
+
+/* (Paranoia) override any corner-specific padding classes */
+#viewDiv .esri-ui-top-left,
+#viewDiv .esri-ui-top-right,
+#viewDiv .esri-ui-bottom-left,
+#viewDiv .esri-ui-bottom-right {
+  padding: 0 !important;
+}
+
+/* === SID Counter Table Styles === */
+.program-stats {
+  width: 100%;
+  border-collapse: collapse;
+}
+.program-stats th,
+.program-stats td {
+  padding: 2px 6px;
+}
+.program-stats .totals td {
+  border-top: 1px solid #ccc;
+  font-weight: 600;
+}
+.program-stats .num {
+  text-align: right;
+}
+
+/* SID Counter header + section rows */
+#typeBreakdown .sid-counter-title{
+  font-weight: 800;
+  margin: 6px 0 6px 0;
+  font-size: 13px;
+}
+
+.program-stats thead th{
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 4px;
+}
+
+.program-stats th.left{
+  text-align: left;
+}
+
+/* Single-line bold parents (keep numbers visible) */
+.program-stats tr.sid-parent td{
+  font-weight: 800;
+}
+
+
+.program-stats tr.sid-section td{
+  font-weight: 800;
+  padding-top: 8px;
+}
+
+.program-stats tr.sid-section td:not(:first-child){
+  color: transparent;           /* keeps columns aligned but visually blank */
+  user-select: none;
+}
+
+
+/* SID Counter header + section rows */
+#typeBreakdown .sid-counter-title{
+  font-weight: 800;
+  margin: 6px 0 6px 0;
+  font-size: 13px;
+}
+
+.program-stats thead th{
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 4px;
+}
+
+.program-stats th.left{
+  text-align: left;
+}
+
+
+.program-stats tr.sid-section td:not(:first-child){
+  color: transparent;           /* keeps columns aligned but visually blank */
+  user-select: none;
+}
+
+
+/* ===== Compact filter grids (Validation Map style) ===== */
+
+#regionCheckboxes{
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+#regionCheckboxes label{
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+#regionCheckboxes input[type="checkbox"]{
+  margin: 0;
+}
+
+
+/* Validation Map-style compact checkbox grids */
+.compact-check-grid{
+  display:grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.compact-check-grid label{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  margin:0;
+  white-space:nowrap;
+}
+
+/* Program “tree” layout */
+.program-tree .program-group{ margin: 6px 0; }
+.program-tree .program-parent{ font-weight:600; display:flex; align-items:center; gap:6px; margin:0; }
+.program-tree .program-children{
+  margin-left: 18px;
+  margin-top: 4px;
+  display:grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 10px;
+  font-size: 12px;
+}
+.program-tree .program-children label{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  margin:0;
+  white-space:nowrap;
+}
+
+/* ===== Programs: restore tree layout, just tighter spacing ===== */
+#programsSection{
+  padding: 2px 6px;           /* less padding than before */
+}
+
+#programCheckboxes{
+  padding: 0;                 /* let the tree control spacing */
+}
+
+/* tighten each group */
+#programCheckboxes .program-group{
+  margin: 3px 0;              /* was bigger before */
+  padding: 0;
+}
+
+/* parent row */
+#programCheckboxes .program-parent{
+  margin: 0;
+  padding: 1px 0;
+  line-height: 1.15;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* children container */
+#programCheckboxes .program-children{
+  margin: 2px 0 4px 18px;     /* small indent like before, tighter */
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;  /* keep 2 columns for children */
+  gap: 2px 14px;                   /* tighter gaps */
+}
+
+/* child rows */
+#programCheckboxes .program-children label{
+  margin: 0;
+  padding: 0;
+  line-height: 1.15;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* checkbox spacing */
+#programCheckboxes input[type="checkbox"]{
+  margin: 0;
+}
+
+/* Down-only filter */
+.filter-down-only{
+  margin: 6px 0 8px;
+  font-size: 12px;
+}
+.filter-down-only label{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.filter-down-only input[type="checkbox"]{
+  margin: 0;
+}
+
+/* 2-space-ish indent for child rows */
+.program-stats td.prog.indent {
+  padding-left: 16px;  /* tweak to taste */
+}
+
+/* ===== Down table status badges ===== */
+.status-cell {
+  width: 44px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  border-radius: 10px;
+  font-size: 14px;           /* makes emoji readable */
+  line-height: 1;
+  font-weight: 700;
+  border: 1px solid rgba(255,255,255,0.25);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+}
+
+/* =========================
+   SID Counter (Type Breakdown) – hard reset
+   Fixes "all in one line" / flex/inline table breakage
+   ========================= */
+
+#typeBreakdown { width: 100%; }
+#typeBreakdown .sid-counter-title{
+  font-weight: 800;
+  margin: 6px 0 6px;
+}
+
+/* FORCE table semantics even if some global CSS broke them */
+#typeBreakdown table.program-stats{ display: table !important; }
+#typeBreakdown table.program-stats tr{ display: table-row !important; }
+#typeBreakdown table.program-stats th,
+#typeBreakdown table.program-stats td{ display: table-cell !important; }
+
+#typeBreakdown table.program-stats{
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+#typeBreakdown table.program-stats th,
+#typeBreakdown table.program-stats td{
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  border-bottom: 1px solid rgba(0,0,0,0.12);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+#typeBreakdown table.program-stats th.left{ text-align: left; }
+#typeBreakdown table.program-stats td.prog{ text-align: left; }
+#typeBreakdown table.program-stats td.num{
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#typeBreakdown table.program-stats td.prog.indent{
+  padding-left: 18px;
+}
+
+#typeBreakdown table.program-stats tr.sid-section td{
+  font-weight: 800;
+  border-top: 2px solid rgba(0,0,0,0.25);
+  background: rgba(0,0,0,0.04);
+}
+
+/* Keep the RADAR header row clean */
+#typeBreakdown table.program-stats tr.sid-section td:not(:first-child){
+  border-bottom: 1px solid rgba(0,0,0,0.12);
+}
+
+#typeBreakdown table.program-stats tr.totals td{
+  font-weight: 900;
+  border-top: 2px solid rgba(0,0,0,0.65);
+  border-bottom: none;
+}
+
+
+/* Optional (if you later switch emoji to letters) */
+.status-down { background: rgba(255,0,0,0.20); }
+.status-degraded { background: rgba(255,212,0,0.25); }
+.status-patching { background: rgba(30,99,255,0.25); }
+
+#downTable th:first-child {
+  width: 44px;
+  text-align: center;
+}
+  /* =========================
+     UI Settings Scaling (NEW)
+     ========================= */
+  :root{
+    --ui-font-scale: 1;
+  }
+
+  /* Left sidebar */
+  #sidebar label{ font-size: calc(12px * var(--ui-font-scale)) !important; }
+  #sidebar input[type="text"],
+  #sidebar input[type="search"],
+  #sidebar select{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+  #sidebar button{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+  #sidebar .subsection-label{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+  #sidebar .filter-header{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+
+  /* Right sidebar */
+  #rightSidebar .right-content{ font-size: calc(14px * var(--ui-font-scale)) !important; }
+  #rightSidebar .filter-header{ font-size: calc(12px * var(--ui-font-scale)) !important; }
+  #rightSidebar .legend-container{ font-size: calc(14px * var(--ui-font-scale)) !important; }
+
+  /* Down table + SID counter */
+  #downTable td, #downTable th{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+  #typeBreakdown table.program-stats th,
+  #typeBreakdown table.program-stats td{
+    font-size: calc(12px * var(--ui-font-scale)) !important;
+  }
+
+  /* =========================
+   WWA List (Popup)
+   ========================= */
+a.wwa-list-link{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:4px 8px;
+  border-radius:8px;
+  border:1px solid rgba(0,0,0,0.12);
+  background:#ffffff;
+  color:#0b3a63;
+  font-weight:800;
+  font-size:12px;
+  text-decoration:none;
+  cursor:pointer;
+}
+a.wwa-list-link:hover{
+  background:#eef5fb;
+}
+
+/* Undocked draggable popup */
+.floating-popup{
+  position:fixed;
+  z-index:9999;
+  top:120px;
+  left:120px;
+  width:min(980px, calc(100vw - 40px));
+  max-width:980px;
+  border-radius:12px;
+  border:1px solid rgba(0,0,0,0.15);
+  background:#fff;
+  box-shadow:0 18px 50px rgba(0,0,0,0.20);
+  overflow:hidden;
+}
+
+.floating-popup-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  background:rgba(0,51,102,0.92);
+  color:#fff;
+  cursor:move;
+  user-select:none;
+}
+
+.floating-popup-count{
+  display:inline-block;
+  padding:2px 8px;
+  border-radius:999px;
+  background:rgba(255,255,255,0.18);
+  border:1px solid rgba(255,255,255,0.25);
+  font-size:12px;
+  font-weight:800;
+}
+
+.floating-popup-status{
+  font-size:12px;
+  opacity:.9;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:40vw;
+}
+
+.floating-popup-btn{
+  border:1px solid rgba(255,255,255,0.45);
+  background:rgba(255,255,255,0.14);
+  color:#fff;
+  border-radius:8px;
+  padding:4px 10px;
+  cursor:pointer;
+  font-weight:900;
+  font-size:12px;
+  line-height:1;
+}
+.floating-popup-btn:hover{ background:rgba(255,255,255,0.22); }
+
+.floating-popup-body{
+  padding:10px 12px 12px;
+}
+
+.floating-popup-toolbar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-bottom:10px;
+}
+.floating-popup-toolbar input[type="search"]{
+  flex:1;
+  padding:8px 10px;
+  border-radius:10px;
+  border:1px solid rgba(0,0,0,0.15);
+  outline:none;
+}
+.floating-popup-toolbar button{
+  padding:8px 10px;
+  border-radius:10px;
+  border:1px solid rgba(0,0,0,0.12);
+  background:#fff;
+  cursor:pointer;
+  font-weight:800;
+  font-size:12px;
+}
+.floating-popup-toolbar button:hover{ background:#eef5fb; }
+
+.floating-popup-table-wrap{
+  max-height:min(60vh, 560px);
+  overflow:auto;
+  border-radius:10px;
+  border:1px solid rgba(0,0,0,0.10);
+}
+
+.floating-popup-table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  font-size:12px;
+}
+.floating-popup-table thead th{
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#f5f9fd;
+  border-bottom:1px solid rgba(0,0,0,0.10);
+  text-align:left;
+  padding:8px 10px;
+  font-weight:900;
+  white-space:nowrap;
+}
+.floating-popup-table tbody td{
+  border-bottom:1px solid rgba(0,0,0,0.06);
+  padding:7px 10px;
+  vertical-align:top;
+}
+.floating-popup-table tbody tr:hover td{
+  background:#fbfdff;
+}
+
+/* Minimized state */
+.floating-popup.minimized .floating-popup-body{ display:none; }
+
+#viewDiv #radarImageOverlay{
+  z-index: 0 !important;
+}
+
+#viewDiv .esri-popup,
+#viewDiv .esri-popup__main-container,
+#viewDiv .esri-ui{
+  z-index: 10 !important;
+}
+
+</style>
+

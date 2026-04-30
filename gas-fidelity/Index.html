@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>NWS Systems Status</title>
+
+  <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css" />
+  <script src="https://js.arcgis.com/4.29/"></script>
+  <script src="https://unpkg.com/@photostructure/tz-lookup@11.2.0/tz.js"></script>
+
+  <?!= include("Css"); ?>
+
+  <!-- Provide the canonical web app URL to client JS -->
+  <script>
+    window.APP_WEBAPP_URL = "<?= ScriptApp.getService().getUrl(); ?>";
+  </script>
+
+  <script>
+  // ✅ Failsafe: the link will work even if the full module hasn't initialized yet
+  window.__wwaListOpenFromLink = function(ev){
+    try { if (ev) ev.preventDefault(); } catch(_) {}
+    try {
+      if (typeof window.openWwaListPopup === "function") {
+        window.openWwaListPopup();
+      } else {
+        console.warn("WWA List: openWwaListPopup not ready");
+      }
+    } catch (e) {
+      console.error("WWA List click failed:", e);
+    }
+    return false;
+  };
+</script>
+
+</head>
+
+<body>
+  <div id="app-container" style="display:flex;height:100%;width:100%;flex-direction:column;min-height:0;">
+    <div id="header">
+      <div class="hdr-left">
+        <div id="current-time" class="hdr-current-time">Current Time: --</div>
+        <div id="last-updated" class="hdr-last-updated">Last Updated: --</div>
+      </div>
+
+      <div class="hdr-center">
+        <div class="hdr-title">NWS Systems Status</div>
+      </div>
+
+      <div class="hdr-right">
+        <div class="hdr-right-top">
+          <a
+            id="menuBtn"
+            href="https://script.google.com/a/macros/noaa.gov/s/AKfycbz9wGsgK9Wm2cdzt7V6oovTloywY9kHXiFTeVvyk55vIqtwsX3qCoqyv4NkPZAp5mkC/exec"
+            title="Menu"
+          >Menu</a>
+          <button id="aboutHelpBtn" type="button" title="About / Help">Help</button>
+          <span id="refresh-timer">(Refreshing...)</span>
+        </div>
+        <div id="load-status" class="hdr-load-status">Loading points...</div>
+      </div>
+    </div>
+
+    <div id="banner-container"></div>
+
+    <div id="mainContainer">
+      <div id="sidebar">
+        <div id="filters">
+
+  <!-- FILTERS (collapsible container) -->
+  <div class="filter-header" id="filtersHeader" aria-expanded="true">
+    <span>Filters</span><span class="chev">▾</span>
+  </div>
+
+  <div id="filtersSection" class="collapse-content">
+
+    <!-- Rotation (single instance ONLY) -->
+    <div style="margin-top:10px;">
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="timedRotation">
+        <span>Timed Rotation by Program</span>
+      </label>
+
+      <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
+        <label for="rotationPauseSeconds" style="font-size:12px; opacity:0.9;">Pause (sec)</label>
+        <input
+          type="number"
+          id="rotationPauseSeconds"
+          min="1"
+          step="1"
+          value="5"
+          style="width:72px; padding:3px 6px;"
+        />
+      </div>
+
+      <!-- MOVED HERE (was in MAP/UI) -->
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <input type="checkbox" id="zoomOnFilter">
+
+        <span>Zoom Map to Feature</span>
+      </label>
+
+      <!-- MOVED HERE (was in MAP/UI) -->
+      <label style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <input type="checkbox" id="showDownOnly">
+        <span>Show only Down / Degraded sites</span>
+      </label>
+
+      <label style="display:block; margin-top:6px;">
+        <input type="checkbox" id="hideDownDegraded">
+        Hide all Down/Degraded sites
+      </label>
+
+      <label style="display:block; margin-top:6px;">
+        <input type="checkbox" id="showWWAOnly">
+        Show only WWA Sites
+      </label>
+    </div>
+
+    <!-- ADVANCED SEARCH -->
+    <div class="filter-header" id="advSearchHeader" aria-expanded="true">
+      <span>Advanced Search</span><span class="chev">▾</span>
+    </div>
+    <div id="advSearchSection" class="collapse-content">
+      <div class="subsection-label" style="border-top:none;padding-top:0;margin-top:0;">Search Fields</div>
+
+      <label style="margin-top:6px;">PID</label>
+      <input id="f_pid" type="text" placeholder="">
+
+      <label style="margin-top:6px;">SID</label>
+      <input id="f_sid" type="text" placeholder="e.g., KXYZ">
+
+      <label style="margin-top:6px;">WFO</label>
+      <input id="f_wfo" type="text" placeholder="e.g., LWX">
+
+      <label style="margin-top:6px;">City</label>
+      <input id="f_city" type="text" placeholder="City contains...">
+
+      <label style="margin-top:6px;">State</label>
+      <input id="f_state" type="text" placeholder="State (e.g., VA)">
+
+      <label style="margin-top:6px;">Any text</label>
+      <input id="f_any" type="text" placeholder="">
+
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button id="clearSearchBtn" type="button" style="flex:1;">Clear Search</button>
+      </div>
+    </div>
+
+    <!-- REGIONS -->
+    <div class="filter-header" id="regionToggleBtn" aria-expanded="true">
+      <span>Regions</span><span class="chev">▾</span>
+    </div>
+    <div id="regionCheckboxes" class="collapse-content"></div>
+
+    <!-- OFFICE TYPE -->
+    <div class="filter-header" id="officeTypeHeader" aria-expanded="true">
+      <span>Office Type</span><span class="chev">▾</span>
+    </div>
+    <div id="officeTypeSection" class="collapse-content">
+      <div id="officeTypeCheckboxes" class="compact-check-grid"></div>
+    </div>
+
+    <!-- PROGRAMS -->
+    <div class="filter-header" id="programsHeader" aria-expanded="true">
+      <span>Programs</span><span class="chev">▾</span>
+    </div>
+    <div id="programsSection" class="collapse-content">
+      <div id="programCheckboxes" class="program-tree"></div>
+    </div>
+
+    <!-- FILTER RESET (moved into Filters container) -->
+    <div style="margin-top:10px;">
+      <button id="resetButton" type="button" style="width:100%;">Reset Filters</button>
+    </div>
+
+  </div><!-- END #filtersSection -->
+
+  <hr class="panel-divider">
+
+  <!-- MAP/UI (collapsible) -->
+  <div class="filter-header" id="mapHeader" aria-expanded="true">
+    <span>MAP/UI</span><span class="chev">▾</span>
+  </div>
+
+
+          <!-- IMPORTANT: use collapse-content so initCollapsibleEx works correctly -->
+          <div id="mapSection" class="collapse-content">
+
+            <!-- Map controls -->
+            <div class="map-controls">
+              <div class="map-row">
+                <label for="basemapSelect">Basemap</label>
+                <select id="basemapSelect">
+                  <option value="osm" selected>OpenStreetMap</option>
+                  <option value="satellite">Satellite</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- UI SETTINGS (subsection under MAP/UI) -->
+            <div class="filter-header" id="settingsHeader" aria-expanded="false" style="margin-top:10px;">
+              <span>UI Settings</span><span class="chev">▾</span>
+            </div>
+
+            <div id="settingsSection" class="collapse-content" style="display:none;">
+
+              <!-- UI Font Size -->
+              <div class="overlay-row" style="margin-top:6px;">
+                <label for="uiFontScale" style="white-space:nowrap;">UI Font Size</label>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <input id="uiFontScale" type="range" min="0.80" max="1.60" step="0.05" value="1.00" style="flex:1;">
+                  <span id="uiFontScaleValue" style="min-width:56px;text-align:right;">100%</span>
+                </div>
+              </div>
+
+              <!-- Icon Size -->
+              <div class="overlay-row" style="margin-top:10px;">
+                <label for="uiIconScale" style="white-space:nowrap;">Icon Size</label>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <input id="uiIconScale" type="range" min="0.70" max="1.80" step="0.05" value="1.00" style="flex:1;">
+                  <span id="uiIconScaleValue" style="min-width:56px;text-align:right;">100%</span>
+                </div>
+              </div>
+
+              <!-- Icon Font Size -->
+              <div class="overlay-row" style="margin-top:10px;">
+                <label for="uiIconFontScale" style="white-space:nowrap;">Icon Font</label>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <input id="uiIconFontScale" type="range" min="0.70" max="1.80" step="0.05" value="1.00" style="flex:1;">
+                  <span id="uiIconFontScaleValue" style="min-width:56px;text-align:right;">100%</span>
+                </div>
+              </div>
+
+              <!-- Icon Link + Reset -->
+              <div style="margin-top:10px;display:flex;gap:8px;">
+                <button id="uiLinkIconBtn" type="button" style="flex:1;">Icon Link: OFF</button>
+                <button id="uiResetBtn" type="button" style="flex:1;">Reset</button>
+              </div>
+
+              <!-- Refresh -->
+              <div style="margin-top:8px;display:flex;gap:8px;">
+                <button id="uiRefreshBtn" type="button" style="flex:1;">Refresh Data</button>
+              </div>
+
+              <!-- Reset Map & Zoom (moved here) -->
+              <div style="margin-top:8px;display:flex;gap:8px;">
+                <button id="viewResetButton" type="button" style="flex:1;">Reset Map &amp; Zoom</button>
+              </div>
+
+            </div><!-- /#settingsSection -->
+          </div><!-- /#mapSection -->
+          
+          <hr class="panel-divider">
+
+          <!-- OVERLAYS (single collapsible container) -->
+          <div class="filter-header" id="overlaysHeader" aria-expanded="true">
+            <span style="display:flex;align-items:center;gap:6px;min-width:0;">
+              <span>Overlays</span>
+              <span id="overlaysFailBadge" class="cors-badge" style="display:none;">(Some overlays failed)</span>
+            </span>
+            <span class="chev">▾</span>
+          </div>
+
+
+          <div id="overlaysSection" class="collapse-content">
+
+            <div class="filter-header" id="radarSectionHeader" aria-expanded="true">
+              <span style="display:flex;align-items:center;gap:6px;min-width:0;">
+                <span>Radar Base Reflectivity</span>
+                <span id="radarCorsBadge" class="cors-badge" style="display:none;">(Radar blocked by CORS)</span>
+              </span>
+              <span class="chev">▾</span>
+            </div>
+
+            <div id="radarSection" class="collapse-content">
+              <label style="display:flex;align-items:center;gap:8px;">
+                <input type="checkbox" id="radarToggle"> Show radar
+              </label>
+            <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+              <label for="radarOpacity" style="white-space:nowrap;">Opacity</label>
+              <input id="radarOpacity" type="range" min="0" max="1" step="0.05" style="flex:1;">
+              <span id="radarOpacityValue" style="min-width:48px; text-align:right;">60%</span>
+            </div>
+
+            </div>
+
+            <div class="filter-header" id="wwaSectionHeader" aria-expanded="false">
+              <span style="display:flex;align-items:center;gap:6px;min-width:0;">
+                <span>Watches / Warnings / Advisories</span>
+                <span id="wwaFailBadge" class="cors-badge" style="display:none;">(WWA failed to load)</span>
+              </span>
+              <span class="chev">▾</span>
+            </div>
+            <div id="wwaSection" class="collapse-content">
+              <label style="display:flex;align-items:center;gap:8px;">
+                <input type="checkbox" id="wwaToggle"> Show WWA
+              </label>
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+                <label for="wwaOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="wwaOpacity" type="range" min="0" max="1" step="0.05" style="flex:1;">
+                <span id="wwaOpacityValue" style="min-width:48px; text-align:right;">60%</span>
+              </div>
+
+              <!-- WWA List link (opens undocked popup) -->
+              <div class="overlay-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;">
+                <a id="wwaListLink" class="wwa-list-link" href="#" data-wwa-list-open="1" role="button">WWA List</a>
+                <span class="subtle" style="font-size:11px;opacity:.75;">(filter/search)</span>
+              </div>
+
+              <div id="wwaLegendContainer" class="mini-legend wwa-mini-legend" style="display:none;margin-top:6px;">
+                <div id="wwaLegendHeader"
+                     class="wwa-legend-header"
+                     role="button"
+                     tabindex="0"
+                     aria-expanded="true">
+                  <span>WWA Legend</span>
+                  <span class="chev">▾</span>
+                </div>
+
+                <div id="wwaLegendBody" class="wwa-legend-body">
+                  <div id="wwaLegend"></div>
+                </div>
+              </div>
+
+            </div>
+
+            <div class="filter-header" id="wfoSectionHeader" aria-expanded="false">
+              <span>WFO Footprint</span><span class="chev">▾</span>
+            </div>
+
+            <div id="wfoSection" class="collapse-content">
+              <label style="display:flex;align-items:center;gap:8px;">
+                <input type="checkbox" id="wfoToggle"> Show WFO Footprint
+              </label>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+                <label for="wfoOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="wfoOpacity" type="range" min="0" max="1" step="0.05" style="flex:1;">
+                <span id="wfoOpacityValue" style="min-width:48px; text-align:right;">85%</span>
+              </div>
+
+            </div>
+
+            <!-- RFC Footprint -->
+            <div class="filter-header" id="rfcSectionHeader" aria-expanded="true">
+              <span>RFC Footprint</span><span class="chev">▾</span>
+            </div>
+            <div id="rfcSection" class="collapse-content">
+              <div style="display:flex; align-items:center; gap:8px; margin:6px 0;">
+                <input id="rfcToggle" type="checkbox">
+                <label for="rfcToggle" style="margin:0; font-weight:600;">Show RFC Footprint</label>
+              </div>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+                <label for="rfcOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="rfcOpacity" type="range" min="0" max="1" step="0.05" value="0.35" style="flex:1;">
+                <span id="rfcOpacityValue" style="min-width:48px; text-align:right;">35%</span>
+              </div>
+
+            </div>
+
+            <!-- CWSU Footprint -->
+            <div class="filter-header" id="cwsuSectionHeader" aria-expanded="false">
+              <span>CWSU Footprint</span><span class="chev">▾</span>
+            </div>
+
+            <div id="cwsuSection" class="collapse-content">
+              <div class="overlay-row">
+                <label style="display:flex; align-items:center; gap:8px;">
+                  <input type="checkbox" id="cwsuToggle">
+                  <span>Show CWSU Footprint</span>
+                </label>
+              </div>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <label for="cwsuOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="cwsuOpacity" type="range" min="0" max="1" step="0.05" value="0.85" style="flex:1;">
+                <span id="cwsuOpacityValue" style="min-width:48px; text-align:right;">85%</span>
+              </div>
+            </div>
+
+            <!-- MCC Footprint -->
+            <div class="filter-header" id="mccSectionHeader" aria-expanded="false">
+              <span>MCC Footprint</span><span class="chev">▾</span>
+            </div>
+            <div id="mccSection" class="collapse-content">
+              <div class="overlay-row">
+                <label style="display:flex; align-items:center; gap:8px;">
+                  <input type="checkbox" id="mccToggle">
+                  <span>Show MCC Footprint</span>
+                </label>
+              </div>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <label for="mccOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="mccOpacity" type="range" min="0" max="1" step="0.05" value="0.70" style="flex:1;">
+                <span id="mccOpacityValue" style="min-width:48px; text-align:right;">70%</span>
+              </div>
+            </div>
+
+            <!-- Region Footprint -->
+            <div class="filter-header" id="regSectionHeader" aria-expanded="false">
+              <span>Region Footprint</span><span class="chev">▾</span>
+            </div>
+            <div id="regSection" class="collapse-content">
+              <div class="overlay-row">
+                <label style="display:flex; align-items:center; gap:8px;">
+                  <input type="checkbox" id="regToggle">
+                  <span>Show Region Footprint</span>
+                </label>
+              </div>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <label for="regOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="regOpacity" type="range" min="0" max="1" step="0.05" value="0.75" style="flex:1;">
+                <span id="regOpacityValue" style="min-width:48px; text-align:right;">75%</span>
+              </div>
+            </div>
+
+            <!-- Time Zones -->
+            <div class="filter-header" id="tzSectionHeader" aria-expanded="false">
+              <span>Time Zones</span><span class="chev">▾</span>
+            </div>
+
+            <div id="tzSection" class="collapse-content">
+              <label style="display:flex;align-items:center;gap:8px;">
+                <input type="checkbox" id="tzToggle"> Show time zones
+              </label>
+
+              <div class="overlay-row" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+                <label for="tzOpacity" style="white-space:nowrap;">Opacity</label>
+                <input id="tzOpacity" type="range" min="0" max="1" step="0.05" style="flex:1;">
+                <span id="tzOpacityValue" style="min-width:48px; text-align:right;">35%</span>
+              </div>
+            </div>
+
+          </div><!-- END #overlaysSection -->
+
+        </div><!-- END #filters -->
+      </div><!-- END #sidebar -->
+
+      <div id="viewDiv" tabindex="0" aria-label="Map view"></div>
+
+      <div id="mapClockBar" class="map-clock-bar expanded" aria-live="polite">
+        <button id="mapClockToggle" class="map-clock-toggle" type="button" aria-expanded="true" title="Collapse clocks">▾</button>
+
+        <div id="mapClockBody" class="map-clock-body">
+          <div class="map-clock-chip"><span class="map-clock-label">Guam</span><span id="clock-guam" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Pacific</span><span id="clock-pacific" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Alaska</span><span id="clock-alaska" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Hawaiʻi</span><span id="clock-hawaii" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Mountain</span><span id="clock-mountain" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Central</span><span id="clock-central" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Eastern</span><span id="clock-eastern" class="map-clock-value">--</span></div>
+          <div class="map-clock-chip"><span class="map-clock-label">Zulu</span><span id="clock-zulu" class="map-clock-value">--</span></div>
+        </div>
+      </div>
+
+      <button
+        id="toggleRightSidebarBtn"
+        type="button"
+        aria-label="Toggle right sidebar"
+        title="Toggle right sidebar"
+      >►</button>
+
+      <div id="rightSidebar">
+        <div class="right-content">
+
+          <!-- LEGEND -->
+          <div class="legend-block">
+            <div class="filter-header" id="legendHeader" aria-expanded="true">
+              <span>Legend</span><span class="chev">▾</span>
+            </div>
+
+            <div id="legendSection" class="collapse-content">
+              <div class="legend-container legend-grid" style="margin-bottom:8px;">
+                <div class="legend-item"><span class="legend-color" style="background:green;"></span>Up</div>
+                <div class="legend-item"><span class="legend-color" style="background:red;"></span>Down</div>
+                <div class="legend-item"><span class="legend-color" style="background:#ffd400;"></span>Degraded</div>
+                <div class="legend-item"><span class="legend-color" style="background:#1e63ff;"></span>Patching</div>
+              </div>
+
+              <div id="programLegend"></div>
+            </div>
+          </div>
+
+          <hr class="panel-divider">
+
+          <div class="filter-header" id="statusTotalsHeader" aria-expanded="true">
+            <span>Status Totals</span><span class="chev">▾</span>
+          </div>
+
+          <div id="statusTotalsSection" class="collapse-content">
+            <div id="typeBreakdown"></div>
+          </div>
+
+          <hr class="panel-divider">
+
+          <div class="filter-header" id="downSectionHeader" aria-expanded="true">
+            <span>Down Sites</span><span class="chev">▾</span>
+          </div>
+
+
+          <div id="downSection" class="collapse-content">
+            <label style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0;">
+              <input type="checkbox" id="downAutoExpand">
+              <span>Auto Expand</span>
+            </label>
+
+            <table id="downTable"></table>
+          </div>
+
+        </div>
+      </div>
+
+      <button
+        id="toggleSidebarBtn"
+        type="button"
+        aria-label="Toggle left sidebar"
+        title="Toggle left sidebar"
+      >◄</button>
+
+    </div><!-- END #mainContainer -->
+  </div><!-- END #app-container -->
+
+  <?!= include("Radar"); ?>
+  <?!= include("WWA"); ?>
+  <?!= include("WFO"); ?>
+  <?!= include("RFC"); ?>
+  <?!= include("CWSU"); ?>
+  <?!= include("MCC"); ?>
+  <?!= include("Region"); ?>
+  <?!= include("Timezones"); ?>
+  <?!= include("About"); ?>
+  <?!= include("JavaScript"); ?>
+
+  <!-- =========================
+      WWA LIST POPUP (Undocked)
+      ========================= -->
+  <div id="wwaListPopup" class="floating-popup" style="display:none;" aria-hidden="true">
+    <div id="wwaListPopupHeader" class="floating-popup-header" title="Drag to move">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+        <strong style="white-space:nowrap;">WWA List</strong>
+        <span id="wwaListPopupCount" class="floating-popup-count">0</span>
+        <span id="wwaListPopupStatus" class="floating-popup-status"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button id="wwaListPopupMinBtn" class="floating-popup-btn" type="button" title="Minimize">—</button>
+        <button id="wwaListPopupCloseBtn" class="floating-popup-btn" type="button" title="Close">✕</button>
+      </div>
+    </div>
+
+    <div id="wwaListPopupBody" class="floating-popup-body">
+      <div class="floating-popup-toolbar">
+        <input id="wwaListPopupSearch" type="search" placeholder="Filter loaded rows (Load More to fetch more)..." />
+        <button id="wwaListPopupClear" type="button">Clear</button>
+        <button id="wwaListPopupReload" type="button">Reload</button>
+        <button id="wwaListPopupMore" type="button">Load More</button>
+      </div>
+
+      <div id="wwaListPopupTableWrap" class="floating-popup-table-wrap">
+        <table id="wwaListPopupTable" class="floating-popup-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,236 @@
+<script>
+(function () {
+  if (window.installRFC) return;
+
+  const DEBUG = !!window.APP_DEBUG;
+  const dbg = (...a) => { if (DEBUG) console.log(...a); };
+
+  // Contrasting fill palette (RGBA)
+  const RFC_PALETTE = [
+    [  0,114,178,120],[213, 94,  0,120],[  0,158,115,120],[204,121,167,120],
+    [240,228, 66,120],[ 86,180,233,120],[230,159,  0,120],[128,  0,128,120],
+    [220, 20, 60,120],[ 34,139, 34,120],[ 70,130,180,120],[255,105,180,120],
+    [210,105, 30,120],[ 46,139, 87,120],[106, 90,205,120],[199, 21,133,120]
+  ];
+
+  window.installRFC = function ({ view, map }) {
+    dbg("[RFC] installRFC called");
+
+    require([
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/Polygon",
+      "esri/geometry/SpatialReference",
+      "esri/symbols/SimpleFillSymbol"
+    ], function (GraphicsLayer, Graphic, Polygon, SpatialReference, SimpleFillSymbol) {
+
+      const toggle = document.getElementById("rfcToggle");
+      const range  = document.getElementById("rfcOpacity");
+      const label  = document.getElementById("rfcOpacityValue");
+
+      const VIS_KEY = "rfcVisible";
+      const OP_KEY  = "rfcOpacity";
+
+      const safeJsonParseBool = (s, fallback) => {
+        try {
+          if (s == null) return fallback;
+          // handles "true"/"false" and JSON boolean
+          if (s === "true" || s === "false") return s === "true";
+          return !!JSON.parse(s);
+        } catch (_) {
+          return fallback;
+        }
+      };
+
+      const loadVis = () => safeJsonParseBool(localStorage.getItem(VIS_KEY), false); // default OFF
+      const loadOp = () => {
+        const v = localStorage.getItem(OP_KEY);
+        const n = v !== null ? parseFloat(v) : 0.85;
+        return Number.isFinite(n) ? n : 0.85;
+      };
+      const saveVis = (v) => { try { localStorage.setItem(VIS_KEY, JSON.stringify(!!v)); } catch(_) {} };
+      const saveOp  = (v) => { try { localStorage.setItem(OP_KEY, String(v)); } catch(_) {} };
+
+      // State
+      const state = window._rfc = window._rfc || {
+        layer: null,
+        loaded: false,
+        loading: false
+      };
+
+      const initVis = loadVis();
+      const initOp  = loadOp();
+
+      // Initialize UI
+      if (toggle) toggle.checked = !!initVis;
+      if (range)  range.value = String(initOp);
+      if (label)  label.textContent = `${Math.round(initOp * 100)}%`;
+
+      // If a previous RFC layer exists (from an older run), keep it consistent but don't refetch unless needed
+      const existing = map.findLayerById("rfcFootprintLayer");
+      if (existing) {
+        // If we find an existing layer we treat RFC as already loaded
+        state.layer = existing;
+        state.loaded = true;
+        state.loading = false;
+        existing.visible = !!initVis;
+        existing.opacity = initOp;
+        dbg("[RFC] found existing layer in map; reusing");
+      }
+
+      function geojsonToGraphics(geojson) {
+        const out = [];
+        const feats = (geojson && geojson.features) ? geojson.features : [];
+        let featureIdx = 0;
+
+        function pushPolygon(coords, props, idxForThisFeature) {
+          const rings = coords.map(r => r.map(([x, y]) => [x, y]));
+          const sym = new SimpleFillSymbol({
+            color: RFC_PALETTE[idxForThisFeature % RFC_PALETTE.length],
+            outline: { color: [40, 40, 40, 180], width: 0.75 }
+          });
+
+          out.push(new Graphic({
+            geometry: new Polygon({ rings, spatialReference: SpatialReference.WGS84 }),
+            attributes: Object.assign({}, props || {}),
+            symbol: sym
+          }));
+        }
+
+        for (const f of feats) {
+          if (!f || !f.geometry) continue;
+
+          const idxForThisFeature = featureIdx;
+          const g = f.geometry;
+          const props = f.properties || {};
+
+          if (g.type === "Polygon") {
+            pushPolygon(g.coordinates, props, idxForThisFeature);
+          } else if (g.type === "MultiPolygon") {
+            for (const poly of g.coordinates) pushPolygon(poly, props, idxForThisFeature);
+          }
+
+          featureIdx++;
+        }
+
+        return out;
+      }
+
+      function removeLayerIfPresent() {
+        const lyr = map.findLayerById("rfcFootprintLayer");
+        if (lyr) {
+          try { map.remove(lyr); } catch (_) {}
+        }
+        state.layer = null;
+        state.loaded = false;
+      }
+
+      function applyOpacityToLayer(op) {
+        if (state.layer) state.layer.opacity = op;
+        if (label) label.textContent = `${Math.round(op * 100)}%`;
+      }
+
+      function applyVisibilityToLayer(vis) {
+        if (state.layer) state.layer.visible = !!vis;
+      }
+
+      function loadNow() {
+        if (state.loading) return;
+        state.loading = true;
+
+        dbg("[RFC] loading GeoJSON from server…");
+
+        google.script.run
+          .withFailureHandler(function (err) {
+            state.loading = false;
+            console.error("[RFC] transport failure:", err);
+            alert("RFC Footprint failed to load (transport). See console.");
+          })
+          .withSuccessHandler(function (res) {
+            state.loading = false;
+            try {
+              if (!res || !res.ok) {
+                console.error("[RFC] server failure:", res);
+                alert("RFC Footprint failed to load (server): " + (res && res.error ? res.error : "Unknown"));
+                return;
+              }
+
+              const geo = JSON.parse(res.text);
+              const graphics = geojsonToGraphics(geo);
+
+              dbg("[RFC] features:", (geo.features || []).length, "polygons:", graphics.length);
+
+              if (!graphics.length) {
+                alert("RFC loaded but produced 0 polygons. Check GeoJSON geometry types.");
+                return;
+              }
+
+              // Replace any old layer
+              removeLayerIfPresent();
+
+              const rfcLayer = new GraphicsLayer({
+                title: "RFC Footprint",
+                id: "rfcFootprintLayer",
+                visible: !!toggle?.checked,
+                opacity: loadOp(),
+                listMode: "hide"
+              });
+
+              rfcLayer.addMany(graphics);
+              map.add(rfcLayer);
+
+              // keep your draw-order intent
+              try { map.reorder(rfcLayer, 2); } catch (_) {}
+
+              state.layer = rfcLayer;
+              state.loaded = true;
+
+              // Apply current UI values
+              applyOpacityToLayer(loadOp());
+              applyVisibilityToLayer(!!toggle?.checked);
+
+              dbg("[RFC] loaded OK");
+            } catch (e) {
+              console.error("[RFC] success handler exception:", e);
+              alert("RFC threw an exception. See console.");
+            }
+          })
+          .getRfcGeojsonText();
+      }
+
+      // Wire UI events ONCE
+      if (toggle && toggle.dataset.rfcWired !== "1") {
+        toggle.dataset.rfcWired = "1";
+        toggle.addEventListener("change", function () {
+          const v = !!toggle.checked;
+          saveVis(v);
+
+          // ✅ Lazy behavior: only fetch when turning ON for the first time
+          if (v && !state.loaded) loadNow();
+
+          applyVisibilityToLayer(v);
+        });
+      }
+
+      if (range && range.dataset.rfcWired !== "1") {
+        range.dataset.rfcWired = "1";
+        range.addEventListener("input", function () {
+          const op = parseFloat(range.value);
+          const v = Number.isFinite(op) ? op : 0.85;
+          saveOp(v);
+          applyOpacityToLayer(v);
+        });
+      }
+
+      // ✅ Kick off ONLY if RFC is ON from saved state
+      if (initVis && !state.loaded) {
+        loadNow();
+      } else {
+        // Keep layer (if any) in sync
+        applyVisibilityToLayer(initVis);
+        applyOpacityToLayer(initOp);
+      }
+    });
+  };
+})();
+</script>

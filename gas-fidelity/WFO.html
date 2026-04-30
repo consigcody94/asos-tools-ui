@@ -1,0 +1,166 @@
+<script>
+/**
+ * WFO.html — WFO Footprint overlay (cwa.json)
+ * Matches RFC/CWSU overlay behavior:
+ * - Toggle + Opacity (persisted via localStorage)
+ * - Collapsible section state handled by JavaScript.html (initCollapsibleEx)
+ * - GeoJSON fetched from Code.gs via google.script.run.getWfoGeojsonText()
+ */
+(function () {
+  window.installWFO = function (opts) {
+    const view = opts && opts.view;
+    const map  = opts && opts.map;
+    if (!view || !map) return;
+
+    require([
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/Polygon",
+      "esri/geometry/SpatialReference"
+    ], function (GraphicsLayer, Graphic, Polygon, SpatialReference) {
+
+      const STORAGE_VIS = "wfoVisible";
+      const STORAGE_OP  = "wfoOpacity";
+
+      function loadVis() {
+        const v = localStorage.getItem(STORAGE_VIS);
+        if (v == null) return false;             // default OFF (lazy-load)
+        return v === "true";
+      }
+
+      function saveVis(v) { localStorage.setItem(STORAGE_VIS, v ? "true" : "false"); }
+
+      function loadOp() {
+        const v = parseFloat(localStorage.getItem(STORAGE_OP));
+        return isFinite(v) ? v : 0.85;           // default 85% (matches RFC)
+      }
+      function saveOp(v) { localStorage.setItem(STORAGE_OP, String(v)); }
+
+      const initVis = loadVis();
+      const initOp  = loadOp();
+
+      const toggle = document.getElementById("wfoToggle");
+      const range  = document.getElementById("wfoOpacity");
+      const label  = document.getElementById("wfoOpacityValue");
+
+      if (toggle) toggle.checked = !!initVis;
+      if (range)  range.value = String(initOp);
+      if (label)  label.textContent = `${Math.round(initOp * 100)}%`;
+
+      // Simple palette so adjacent polygons differ slightly (same idea as RFC/CWSU)
+      const palette = [
+        [0, 122, 255], [0, 200, 83], [255, 193, 7], [255, 87, 34],
+        [156, 39, 176], [0, 188, 212], [205, 220, 57], [233, 30, 99]
+      ];
+
+      function symbolForIndex(i) {
+        const c = palette[i % palette.length];
+        return {
+          type: "simple-fill",
+          color: [c[0], c[1], c[2], 0.12],
+          outline: { color: [0, 0, 0, 1], width: 1 }
+        };
+      }
+
+      function geojsonToGraphics(geo) {
+        const out = [];
+        const feats = (geo && geo.features) ? geo.features : [];
+        let featureIdx = 0;
+
+        function pushPolygon(coords, props, idx) {
+          // coords: [ [ [lon,lat], ... ] ] (rings) for Polygon
+          const rings = (coords || []).map(ring =>
+            (ring || []).map(pt => [pt[0], pt[1]])
+          );
+          if (!rings.length) return;
+
+          out.push(new Graphic({
+            geometry: new Polygon({ rings, spatialReference: SpatialReference.WGS84 }),
+            attributes: Object.assign({}, props || {}),
+            symbol: symbolForIndex(idx)
+          }));
+        }
+
+        for (const f of feats) {
+          if (!f || !f.geometry) continue;
+          const g = f.geometry;
+          const props = f.properties || {};
+
+          if (g.type === "Polygon") {
+            pushPolygon(g.coordinates, props, featureIdx);
+          } else if (g.type === "MultiPolygon") {
+            for (const poly of (g.coordinates || [])) pushPolygon(poly, props, featureIdx);
+          }
+          featureIdx++;
+        }
+        return out;
+      }
+
+      google.script.run
+        .withFailureHandler(function (err) {
+          console.error("[WFO] transport failure:", err);
+          alert("WFO Footprint failed to load (transport). See console.");
+        })
+        .withSuccessHandler(function (res) {
+          try {
+            if (!res || !res.ok) {
+              console.error("[WFO] server failure:", res);
+              alert("WFO Footprint failed to load (server): " + (res && res.error ? res.error : "Unknown"));
+              return;
+            }
+
+            const geo = JSON.parse(res.text);
+            const graphics = geojsonToGraphics(geo);
+
+            console.log("[WFO] features:", (geo.features || []).length, "polygons:", graphics.length);
+
+            if (!graphics.length) {
+              alert("WFO loaded but produced 0 polygons. Check GeoJSON geometry types.");
+              return;
+            }
+
+            const wfoLayer = new GraphicsLayer({
+              title: "WFO Footprint",
+              id: "wfoFootprintLayer",
+              visible: !!initVis,
+              opacity: initOp,
+              listMode: "hide"
+            });
+
+            wfoLayer.addMany(graphics);
+            map.add(wfoLayer);
+
+            // Draw-order intent: place WFO between WWA and RFC in the overlays stack
+            // (RFC reorders to 2 in your existing code):contentReference[oaicite:2]{index=2}
+            try { map.reorder(wfoLayer, 3); } catch (e) {}
+
+            if (toggle) {
+              toggle.addEventListener("change", function () {
+                const v = !!toggle.checked;
+                saveVis(v);
+                wfoLayer.visible = v;
+              });
+            }
+
+            if (range) {
+              range.addEventListener("input", function () {
+                const op = parseFloat(range.value);
+                const v = isFinite(op) ? op : 0.85;
+                saveOp(v);
+                wfoLayer.opacity = v;
+                if (label) label.textContent = `${Math.round(v * 100)}%`;
+              });
+            }
+
+            window._wfo = { layer: wfoLayer };
+
+          } catch (e) {
+            console.error("[WFO] success handler exception:", e);
+            alert("WFO threw an exception. See console.");
+          }
+        })
+        .getWfoGeojsonText();
+    });
+  };
+})();
+</script>

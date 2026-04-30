@@ -1,0 +1,5561 @@
+<script>
+/* ===========================
+ * NWS Systems Status — client script (working baseline)
+ * =========================== */
+
+window.isAppInitialized = window.isAppInitialized ?? false;
+window.APP_DEBUG = (typeof window.APP_DEBUG === "boolean") ? window.APP_DEBUG : false;
+window.dbg = window.dbg || function(){};
+if (window.APP_DEBUG) window.dbg = (a) => console.log(a);
+
+let features = [];
+let nextRefreshTime;
+let lastDataRefreshUtc = null;
+const REFRESH_INTERVAL_MS = 300000; // 5 min
+
+/* ===== Fetch / Refresh ===== */
+function scheduleNextFetch() {
+  if (!nextRefreshTime) return;
+  const delay = Math.max(nextRefreshTime - Date.now() + 1000, 5000);
+  setTimeout(fetchData, delay);
+}
+
+const EXCLUDED_PROGRAMS = new Set(['CRS']);
+const isExcludedProgram = (name) => EXCLUDED_PROGRAMS.has(String(name || '').trim().toUpperCase());
+
+const PROGRAM_ICON_META = {
+  // --- ASOS family ---
+  "ASOS (PD)": { letter: "A",  shape: "rectangle",      label: "ASOS (Station)" },
+  "ASOS(PD)":  { letter: "A",  shape: "rectangle",      label: "ASOS (Station)" },
+  "ASOS":      { letter: "A",  shape: "rectangle",      label: "ASOS (Station)" },
+
+  "ACU":       { letter: "Aa", shape: "rectangle",      label: "ACU" },
+  "AA":        { letter: "Aa", shape: "rectangle",      label: "ACU" },
+
+  "DCP":       { letter: "Ad", shape: "rectangle",      label: "DCP" },
+  "AD":        { letter: "Ad", shape: "rectangle",      label: "DCP" },
+
+  "DOW":       { letter: "Do", shape: "rectangle",      label: "DoW" },
+  "DOD/USN":   { letter: "Do", shape: "rectangle",      label: "DoW" },
+
+  // --- AWIPS family ---
+  "AWIPS(PD)": { letter: "W",  shape: "hexagon",        label: "AWIPS" },
+  "AWIPS (PD)":{ letter: "W",  shape: "hexagon",        label: "AWIPS" },
+  "AWIPS":     { letter: "W",  shape: "hexagon",        label: "AWIPS" },
+
+  "SBN":       { letter: "S",  shape: "hexagon",        label: "SBN" },
+
+  // --- NWR ---
+  "NWR(PD)":   { letter: "N",  shape: "pentagon",       label: "NWR" },
+  "NWR (PD)":  { letter: "N",  shape: "pentagon",       label: "NWR" },
+  "NWR":       { letter: "N",  shape: "pentagon",       label: "NWR" },
+
+  // --- RADAR family ---
+  "RADAR (PD)":{ letter: "R",  shape: "square",         label: "RADAR" },
+  "RADAR(PD)": { letter: "R",  shape: "square",         label: "RADAR" },
+  "RADAR":     { letter: "R",  shape: "square",         label: "RADAR" },
+
+  "WSR88D":    { letter: "88", shape: "square",         label: "WSR88D" },
+  "TDWR SPG":  { letter: "TD", shape: "square",         label: "TDWR SPG" },
+  "VWP":       { letter: "VW", shape: "square",         label: "VWP" },
+
+  // --- Buoys ---
+  "BUOY":      { letter: "B",  shape: "diamond",        label: "BUOY" },
+  "BUOY (PD)": { letter: "B",  shape: "diamond",        label: "BUOY" },
+  "BUOY(PD)":  { letter: "B",  shape: "diamond",        label: "BUOY" },
+  "BUOYS":     { letter: "B",  shape: "diamond",        label: "BUOY" },
+
+  "DART":      { letter: "D",  shape: "diamond",        label: "DART" },
+  "TAO":       { letter: "T",  shape: "diamond",        label: "TAO" },
+
+  "OTHER":     { letter: "O",  shape: "diamond",        label: "Other Buoys" },
+  "FIXED":     { letter: "O",  shape: "diamond",        label: "Other Buoys" },
+  "OILRIG":    { letter: "O",  shape: "diamond",        label: "Other Buoys" },
+  "USV":       { letter: "O",  shape: "diamond",        label: "Other Buoys" },
+  "C-MAN":     { letter: "CM", shape: "diamond",        label: "C-MAN" },
+
+  // --- Other ---
+  "FACILITIES":{ letter: "F",  shape: "star",           label: "NWS Facility" },
+  "UA":        { letter: "U",  shape: "circle",         label: "UA" },
+
+  // --- Reserved for future program ---
+  "__FUTURE__":{ letter: "X",  shape: "triangle",       label: "Future Program" }
+};
+
+function getProgramIconMeta(program){
+  const key = String(program || "").trim().toUpperCase();
+  return PROGRAM_ICON_META[key] || { letter: "", shape: "circle", label: key || "Program" };
+}
+
+function programToLetter(program){
+  return getProgramIconMeta(program).letter || "";
+}
+
+function programToShape(program){
+  return getProgramIconMeta(program).shape || "circle";
+}
+
+/* ===== Utility ===== */
+function clamp(n, min, max){
+  n = Number(n);
+  if (!Number.isFinite(n)) n = min;
+  return Math.min(max, Math.max(min, n));
+}
+
+
+// --- Status normalization (handles "SVC BU" vs "SVCBU", etc.) ---
+function normStatus(v){
+  const raw = String(v ?? "").trim();
+  if (!raw) return "";
+
+  const s = raw.toLowerCase();
+  const t = s.replace(/\s+/g, "").replace(/_/g, "");
+
+  // Exact / canonical
+  if (t === "svcbu") return "svcbu";
+  if (t === "patching") return "patching";
+  if (t === "degraded") return "degraded";
+  if (t === "down") return "down";
+  if (t === "up" || t === "operational") return "up";
+
+  // Fuzzy (covers "SVC BU", "SVCBU (provider)", "PATCH", etc.)
+  if (t.includes("svcbu")) return "svcbu";
+  if (t.includes("patch")) return "patching";
+  if (t.includes("degrad")) return "degraded";
+  if (t.includes("down")) return "down";
+  if (t === "ok" || t.includes("up") || t.includes("operational")) return "up";
+
+  return s;
+}
+
+function isOutageStatus_(v){
+  const st = normStatus(v);
+  return (st === "down" || st === "degraded" || st === "patching" || st === "svcbu");
+}
+
+/* =====================================================
+ * GLOBAL utilities + symbol builders (fixes scope issues)
+ * ===================================================== */
+function clamp(n, min, max){
+  n = Number(n);
+  if (!Number.isFinite(n)) n = min;
+  return Math.min(max, Math.max(min, n));
+}
+
+// Global symbol cache (never scoped inside init blocks)
+window.__symbolCache = window.__symbolCache || new Map();
+
+// Bump this any time you change SVG text placement/sizing logic
+window.__symbolRenderVersion = "2026-04-07a";
+
+/**
+ * Global symbol builder (picture-marker SVG)
+ * Reads window.__uiIconScale and window.__uiIconFontScale set by your sliders.
+ */
+window.getSymbol = window.getSymbol || function(status, zoom, program, ring){
+  const st = normStatus(status);
+  const isDown = (st === "down" || st === "svcbu");
+  const isDegraded = (st === "degraded");
+  const isPatching = (st === "patching");
+
+  const fill = isDown ? "red" : (isPatching ? "#1e63ff" : (isDegraded ? "#ffd400" : "green"));
+  const textFill = isDegraded ? "black" : "white";
+
+  const iconScale = clamp(parseFloat(window.__uiIconScale ?? 1), 0.5, 3.0);
+  const iconFontScale = clamp(parseFloat(window.__uiIconFontScale ?? 1), 0.5, 3.0);
+
+  const meta = getProgramIconMeta(program);
+  const letter = meta.letter || "";
+  const shape = meta.shape || "circle";
+  const isTwo = (String(letter || "").length >= 2);
+
+  const progKey = String(program || "").trim().toUpperCase();
+  const isAsosChildBadge =
+    (progKey === "ACU"  || progKey === "AA" ||
+     progKey === "DCP"  || progKey === "AD" ||
+     progKey === "DOW"  || progKey === "DOD/USN");
+
+  const isAsosRectLabel =
+    (progKey === "ASOS" || progKey === "ASOS(PD)" || progKey === "ASOS (PD)" || isAsosChildBadge);
+
+  // Keep degraded/patching larger, same as current behavior
+  const base = isDown ? 5 : ((isDegraded || isPatching) ? 4 : 3);
+  const size = base + zoom * 0.6;
+  const px = Math.max(10, Math.round(size * 2));
+
+  // Wider canvas for 2-character labels and some shapes
+  let w = px;
+  let h = px;
+  if (isTwo) w += 6;
+  if (shape === "rectangle" || shape === "pill" || shape === "shield") w += 4;
+
+  w = Math.max(10, Math.round(w * iconScale));
+  h = Math.max(10, Math.round(h * iconScale));
+
+  const ICON_FONT_BASE = 0.82;
+  const ICON_FONT_SCALE = ICON_FONT_BASE * iconFontScale;
+
+  const fontSize = isAsosRectLabel
+    ? (isTwo
+        ? Math.max(7, Math.round(w * 0.34 * ICON_FONT_SCALE))
+        : Math.max(7, Math.round(w * 0.40 * ICON_FONT_SCALE)))
+    : (isTwo
+        ? Math.max(6, Math.round(Math.min(w, h) * 0.40 * ICON_FONT_SCALE))
+        : Math.max(6, Math.round(Math.min(w, h) * 0.50 * ICON_FONT_SCALE)));
+
+  const safeLetter = letter
+    ? String(letter).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    : "";
+
+  let textDy = "0em";
+
+  // Fine-tune visual centering per symbol/program
+  if (isAsosRectLabel) {
+    textDy = "0em";
+  }
+  else if (progKey === "SBN") textDy = "-0.10em";
+  else if (progKey === "NWR" || progKey === "NWR(PD)" || progKey === "NWR (PD)") textDy = "-0.02em";
+  else if (progKey === "FACILITIES") textDy = "0.01em";
+  else if (progKey === "TAO") textDy = "-0.04em";
+  else if (progKey === "UA") textDy = "-0.03em";
+
+  function shapeSvg(shapeName){
+    const stroke = 'stroke="black" stroke-width="0.8"';
+    const cx = w / 2;
+    const cy = h / 2;
+    const r = Math.min(w, h) / 2 - 1;
+    const left = 1;
+    const top = 1;
+    const right = w - 1;
+    const bottom = h - 1;
+    const rx = Math.max(3, Math.round(Math.min(w, h) * 0.16));
+
+    switch (shapeName) {
+      case "rounded-square":
+        return '<rect x="' + left + '" y="' + top + '" width="' + (w - 2) + '" height="' + (h - 2) + '" rx="' + rx + '" ry="' + rx + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "rectangle":
+        return '<rect x="' + left + '" y="' + (top + 2) + '" width="' + (w - 2) + '" height="' + (h - 4) + '" rx="3" ry="3" fill="' + fill + '" ' + stroke + '/>';
+
+      case "pill":
+        return '<rect x="' + left + '" y="' + (top + 2) + '" width="' + (w - 2) + '" height="' + (h - 4) + '" rx="' + Math.round((h - 4) / 2) + '" ry="' + Math.round((h - 4) / 2) + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "diamond":
+        return '<polygon points="' + cx + ',1 ' + (w - 1) + ',' + cy + ' ' + cx + ',' + (h - 1) + ' 1,' + cy + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "hexagon":
+        return '<polygon points="' +
+          (w*0.25) + ',1 ' +
+          (w*0.75) + ',1 ' +
+          (w-1) + ',' + cy + ' ' +
+          (w*0.75) + ',' + (h-1) + ' ' +
+          (w*0.25) + ',' + (h-1) + ' ' +
+          '1,' + cy +
+          '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "pentagon":
+        return '<polygon points="' +
+          cx + ',1 ' +
+          (w-1) + ',' + (h*0.38) + ' ' +
+          (w*0.80) + ',' + (h-1) + ' ' +
+          (w*0.20) + ',' + (h-1) + ' ' +
+          '1,' + (h*0.38) +
+          '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "triangle":
+        return '<polygon points="' + cx + ',1 ' + (w-1) + ',' + (h-1) + ' 1,' + (h-1) + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "triangle-down":
+        return '<polygon points="1,1 ' + (w-1) + ',1 ' + cx + ',' + (h-1) + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "shield":
+        return '<path d="M ' + (w*0.16) + ' 1 L ' + (w*0.84) + ' 1 L ' + (w-1) + ' ' + (h*0.34) + ' L ' + cx + ' ' + (h-1) + ' L 1 ' + (h*0.34) + ' Z" fill="' + fill + '" ' + stroke + '/>';
+
+      case "octagon":
+        return '<polygon points="' +
+          (w*0.30) + ',1 ' +
+          (w*0.70) + ',1 ' +
+          (w-1) + ',' + (h*0.30) + ' ' +
+          (w-1) + ',' + (h*0.70) + ' ' +
+          (w*0.70) + ',' + (h-1) + ' ' +
+          (w*0.30) + ',' + (h-1) + ' ' +
+          '1,' + (h*0.70) + ' ' +
+          '1,' + (h*0.30) +
+          '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "star":
+        return '<polygon points="' +
+          cx + ',1 ' +
+          (w*0.61) + ',' + (h*0.36) + ' ' +
+          (w-1) + ',' + (h*0.38) + ' ' +
+          (w*0.69) + ',' + (h*0.60) + ' ' +
+          (w*0.80) + ',' + (h-1) + ' ' +
+          cx + ',' + (h*0.74) + ' ' +
+          (w*0.20) + ',' + (h-1) + ' ' +
+          (w*0.31) + ',' + (h*0.60) + ' ' +
+          '1,' + (h*0.38) + ' ' +
+          (w*0.39) + ',' + (h*0.36) +
+          '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "square":
+        return '<rect x="' + left + '" y="' + top + '" width="' + (w - 2) + '" height="' + (h - 2) + '" fill="' + fill + '" ' + stroke + '/>';
+
+      case "circle":
+      default:
+        return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + fill + '" ' + stroke + '/>';
+    }
+  }
+
+  const ringSvg = ring
+    ? '<circle cx="' + (w/2) + '" cy="' + (h/2) + '" r="' + (Math.min(w,h)/2 + 0.5) + '" fill="none" stroke="#ffd400" stroke-width="2.6"/>'
+    : '';
+
+  const textLength = isAsosRectLabel
+    ? Math.round(w * (isTwo ? 0.58 : 0.42))
+    : (isTwo ? Math.round(w * 0.60) : Math.round(w * 0.52));
+
+  const rectTextX = Math.round(w / 2);
+  const rectTextY = Math.round(h / 2) + (isTwo ? 1 : 2);
+
+  const defaultTextAttrs =
+    ' x="50%" y="50%" dy="' + textDy + '"' +
+    ' text-anchor="middle" dominant-baseline="central"' +
+    ' font-family="Arial, sans-serif" font-weight="700" font-size="' + fontSize + '"' +
+    ' letter-spacing="' + (isTwo ? '-0.15' : '0') + '"' +
+    ' textLength="' + textLength + '"' +
+    ' lengthAdjust="spacingAndGlyphs"' +
+    ' fill="' + textFill + '" stroke="black" stroke-width="' + (isTwo ? '0.25' : '0.5') + '" paint-order="stroke"';
+
+  const rectTextAttrs =
+    ' x="' + rectTextX + '" y="' + rectTextY + '"' +
+    ' text-anchor="middle" dominant-baseline="middle"' +
+    ' font-family="Arial, sans-serif" font-weight="700" font-size="' + fontSize + '"' +
+    ' letter-spacing="' + (isTwo ? '-0.05' : '0') + '"' +
+    ' textLength="' + textLength + '"' +
+    ' lengthAdjust="spacingAndGlyphs"' +
+    ' fill="' + textFill + '" stroke="black" stroke-width="' + (isTwo ? '0.25' : '0.5') + '" paint-order="stroke"';
+
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+      shapeSvg(shape) +
+      ringSvg +
+      '<text ' + (isAsosRectLabel ? rectTextAttrs : defaultTextAttrs) + '>' +
+        safeLetter +
+      '</text>' +
+    '</svg>';
+
+  return {
+    type: "picture-marker",
+    url: "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg),
+    width: w,
+    height: h
+  };
+};
+
+/**
+ * Global cached symbol getter (renderPoints() can ALWAYS see this)
+ */
+window.getSymbolCached = window.getSymbolCached || function(status, zoom, program, ring){
+  const iconScale = clamp(parseFloat(window.__uiIconScale ?? 1), 0.5, 3.0);
+  const fontScale = clamp(parseFloat(window.__uiIconFontScale ?? 1), 0.5, 3.0);
+
+  const k =
+    String(window.__symbolRenderVersion || "v1") + "|" +
+    String(status || "").toLowerCase() + "|" +
+    String(zoom) + "|" +
+    String(program || "").toUpperCase() + "|" +
+    (ring ? "1" : "0") + "|" +
+    iconScale + "|" + fontScale;
+
+  const hit = window.__symbolCache.get(k);
+  if (hit) return hit;
+
+  const sym = window.getSymbol(status, zoom, program, ring);
+  window.__symbolCache.set(k, sym);
+  return sym;
+};
+
+
+// ✅ PIDS-row-status resolver (Col AP = "STATUS")
+// Handles common casing/alias variations and falls back to scanning keys.
+function getStatusValue_(p){
+  const o = p || {};
+
+  // 1) Prefer explicit known fields (most reliable)
+  const direct =
+    (o.status ?? o.STATUS ?? o.Status ?? "") ||
+    (o.ap_status ?? o.AP_STATUS ?? o.apStatus ?? o.ApStatus ?? "") ||
+    (o.pids_status ?? o.PIDS_STATUS ?? o.pidsStatus ?? "") ||
+    (o.row_status ?? o.ROW_STATUS ?? o.rowStatus ?? "") ||
+    (o.point_status ?? o.POINT_STATUS ?? o.pointStatus ?? "");
+
+  if (String(direct || "").trim()) return direct;
+
+  // 2) If server sent "STATUS" but with strange key casing/spaces, scan keys safely.
+  // Prefer EXACT "STATUS" / "AP_STATUS" first; avoid grabbing "Facility Status" etc.
+  const keys = Object.keys(o);
+
+  const pick = (re) => {
+    for (const k of keys) {
+      if (re.test(k)) {
+        const v = o[k];
+        if (String(v ?? "").trim()) return v;
+      }
+    }
+    return "";
+  };
+
+  // Most-specific first
+  let v = pick(/^(AP[_\s-]?STATUS)$/i);
+  if (String(v).trim()) return v;
+
+  v = pick(/^(STATUS)$/i);
+  if (String(v).trim()) return v;
+
+  v = pick(/(PIDS|ROW|POINT)[_\s-]?STATUS/i);
+  if (String(v).trim()) return v;
+
+  // Last resort: any key that is exactly "status" ignoring punctuation
+  v = pick(/status$/i);
+  return v;
+}
+
+function buildOfficeTypeCheckboxes() {
+  const host = document.getElementById("officeTypeCheckboxes");
+  if (!host) return;
+
+  const items = ["WFO", "RFC", "NC", "CWSU", "HQ", "OTHER"];
+  host.innerHTML = items.map(v => `
+    <label>
+      <input type="checkbox" class="officeTypeCheckbox" value="${v}">
+      ${v}
+    </label>
+  `).join("");
+}
+
+function buildProgramsTree() {
+  const host = document.getElementById("programCheckboxes");
+  if (!host) return;
+
+  const groups = [
+    { label: "ASOS",  children: ["ACU", "DCP", "DoW"] },
+    { label: "AWIPS", children: ["SBN"] },
+
+    // ✅ BUOYS: subtype filter choices
+    { label: "BUOYS", children: ["BUOY", "DART", "TAO", "OTHER"] },
+
+    { label: "FACILITIES", children: [] },
+    { label: "NWR", children: [] },
+    { label: "RADAR", children: ["TDWR SPG", "VWP", "WSR88D"] },
+    { label: "UA", children: [] },
+  ];
+
+  host.innerHTML = groups.map(g => {
+    const isBuoys = (g.label === "BUOYS");
+
+    const childrenHtml = (g.children && g.children.length) ? `
+      <div class="program-children">
+        ${g.children.map(c => `
+          <label>
+            <input type="checkbox" class="programCheckbox" value="${c}">
+            ${c}
+          </label>
+        `).join("")}
+      </div>
+    ` : ``;
+
+        // ✅ BUOYS extra: divider + agency checkboxes + description (indented under BUOYS)
+        const buoysExtras = isBuoys ? `
+          <div style="margin:8px 0 6px;">
+            <hr style="border:none;border-top:1px solid rgba(0,0,0,12);margin:8px 0;">
+          </div>
+
+          <div style="margin-top:4px; margin-left:18px;">
+            <label style="display:flex;align-items:center;gap:8px;margin:4px 0; font-weight:600;">
+              <input type="checkbox" id="buoyAgencyNws" class="buoyAgencyCheckbox" checked>
+              <span>NWS</span>
+            </label>
+
+            <label style="display:flex;align-items:center;gap:8px;margin:4px 0; font-weight:600;">
+              <input type="checkbox" id="buoyAgencyNoaa" class="buoyAgencyCheckbox">
+              <span>NOAA</span>
+            </label>
+
+            <label style="display:flex;align-items:center;gap:8px;margin:4px 0; font-weight:600;">
+              <input type="checkbox" id="buoyAgencyOther" class="buoyAgencyCheckbox">
+              <span>Other</span>
+            </label>
+
+            <div style="font-size:11px; opacity:.8; margin-top:6px; margin-left:22px;">
+              Applies to all rows where Col N = BUOY (PD). Col AD subtype (BUOY, DART, TAO, Fixed, etc.) does not change owner grouping.
+            </div>
+          </div>
+        ` : ``;
+
+    return `
+      <div class="program-group">
+        <label class="program-parent">
+          <input type="checkbox" class="programCheckbox" value="${g.label}">
+          ${g.label}
+        </label>
+        ${childrenHtml}
+        ${buoysExtras}
+      </div>
+    `;
+  }).join("");
+
+  // Wire BUOYS agency checkboxes (they are created dynamically in the Programs tree)
+  wireBuoyAgencyCheckboxes_();
+}
+
+function wireBuoyAgencyCheckboxes_(){
+  const cbs = document.querySelectorAll(".buoyAgencyCheckbox");
+  cbs.forEach(cb => {
+    if (cb.dataset.wired === "1") return;
+    cb.dataset.wired = "1";
+    cb.addEventListener("change", () => {
+      try { saveFiltersToStorage(); } catch(_) {}
+      try { applyFilters(); } catch(_) {}
+    });
+  });
+}
+
+function classifyBuoyAgency_(raw){
+  const v = String(raw || "").trim().toUpperCase();
+  if (!v) return "OTHER";
+
+  // NWS bucket: only NWS + NDBC
+  if (
+    v === "NDBC" ||
+    v === "NWS" ||
+    v.startsWith("NWS ") ||
+    v.includes("NATIONAL WEATHER SERVICE")
+  ) {
+    return "NWS";
+  }
+
+  // NOAA bucket: NOAA-owned groups that are not NWS/NDBC
+  if (
+    v === "NOAA" ||
+    v.startsWith("NOAA ") ||
+    v.includes("NATIONAL OCEANIC AND ATMOSPHERIC ADMINISTRATION") ||
+    v.includes("NOS") ||
+    v.includes("CO-OPS") ||
+    v.includes("COOPS") ||
+    v.includes("PMEL")
+  ) {
+    return "NOAA";
+  }
+
+  return "OTHER";
+}
+
+function normalizeProgramForFilter(label) {
+  let v = String(label || "").trim().toUpperCase();
+
+  // strip "(PD)" and normalize whitespace
+  v = v.replace(/\s*\(PD\)\s*/g, "").replace(/\s+/g, " ").trim();
+
+  // Back-compat / aliases
+  if (v === "UPPER AIR") v = "UA";
+  if (v === "BOUYS") v = "BUOYS";
+
+  // ASOS subset alias
+  if (v === "DOW" || v === "DOD/USN") return "DOW";
+
+  // ASOS overlays
+  if (v === "AA" || v === "ACU") return "ACU";
+  if (v === "AD" || v === "DCP" || v.startsWith("DCP")) return "DCP";
+
+  // Buoy subtype aliases
+  if (v === "DATA BUOY") v = "BUOY";
+  if (v === "DART BUOY") v = "DART";
+
+  // ✅ Buoy "other" subtypes roll into OTHER
+  if (v === "CMAN" || v === "C MAN" || v === "C-MAN") v = "OTHER";
+  if (v === "FIXED" || v === "OILRIG" || v === "USV") v = "OTHER";
+
+  if (v === "SBN" || v.includes("SBN")) return "SBN";
+
+  // Parents / singles
+  if (v === "ASOS") return "ASOS";
+  if (v.startsWith("AWIPS")) return "AWIPS";
+  if (v.startsWith("NWR")) return "NWR";
+
+  if (v === "RADAR" || v.startsWith("RADAR")) return "RADAR";
+  if (v === "WSR88D") return "WSR88D";
+  if (v === "TDWR SPG") return "TDWR SPG";
+  if (v === "VWP") return "VWP";
+
+  if (v === "BUOYS") return "BUOYS";
+  if (v === "BUOY") return "BUOY";
+  if (v === "DART") return "DART";
+  if (v === "TAO") return "TAO";
+  if (v === "OTHER") return "OTHER";
+
+  if (v === "FACILITIES") return "FACILITIES";
+  if (v === "UA") return "UA";
+
+  return v;
+}
+
+function buoyChildSelectionActive_(){
+  return !!document.querySelector(
+    '.programCheckbox:checked[value="DART"], ' +
+    '.programCheckbox:checked[value="TAO"], ' +
+    '.programCheckbox:checked[value="OTHER"], ' +
+    '.programCheckbox:checked[value="C-MAN"]'
+  );
+}
+
+function radarChildSelectionActive_(){
+  return !!document.querySelector(
+    '.programCheckbox:checked[value="WSR88D"], ' +
+    '.programCheckbox:checked[value="TDWR SPG"], ' +
+    '.programCheckbox:checked[value="VWP"]'
+  );
+}
+
+// ------------------------------
+// Fast data load via web-app JSON endpoint first,
+// with google.script.run fallback.
+// This fixes stale same-browser/session responses by:
+//   - using a direct JSON request
+//   - forcing cache:no-store
+//   - adding a unique _ts query param every request
+// ------------------------------
+function callServer_(fnName, argsArray) {
+  argsArray = Array.isArray(argsArray) ? argsArray : [];
+  return new Promise(function(resolve, reject) {
+    if (!google || !google.script || !google.script.run) {
+      reject(new Error("google.script.run not available"));
+      return;
+    }
+    const runner = google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(function(err){
+        const msg = (err && err.message) ? err.message : String(err);
+        reject(new Error(msg));
+      });
+
+    if (typeof runner[fnName] !== "function") {
+      reject(new Error("Server function not found: " + fnName));
+      return;
+    }
+    runner[fnName].apply(runner, argsArray);
+  });
+}
+
+// ------------------------------
+// Apps Script iframe-safe point loading
+// Avoid browser fetch() here because /dev and /exec JSON fetches from the
+// Apps Script iframe can be blocked by CORS / preflight.
+// google.script.run stays same-origin to the host shell and is reliable here.
+// ------------------------------
+function fetchPointsPass_(pass, force) {
+  pass = String(pass || "base");
+  force = !!force;
+
+  return callServer_("getPointsPayload", [pass, force]).then(function(res) {
+    if (!res || res.ok !== true) {
+      throw new Error((res && res.error) ? res.error : "Point payload was not ok");
+    }
+    return res;
+  });
+}
+
+function fetchData(forceServerRefresh) {
+  forceServerRefresh = !!forceServerRefresh;
+
+  const fetchId = (window.__activeFetchId || 0) + 1;
+  window.__activeFetchId = fetchId;
+
+  var t = document.getElementById("refresh-timer");
+  if (t) t.textContent = "(Refreshing...)";
+
+  // Reset gating flags each cycle
+  window.__basePointsRendered = false;
+  window.__asosApplied = false;
+  window._pendingAsosOverlays = null;
+  window.__overlayQueueRunning = false;
+
+  setLoadStatus("Loading points...");
+
+  // Reuse warm server cache on normal loads; only force a rebuild for explicit manual refreshes.
+  fetchPointsPass_("base", forceServerRefresh)
+    .then(function (res) {
+      if (fetchId !== window.__activeFetchId) return;
+
+      if (res && res.expirationTimestamp) nextRefreshTime = res.expirationTimestamp;
+      else nextRefreshTime = Date.now() + REFRESH_INTERVAL_MS;
+
+      lastDataRefreshUtc = res && res.servedAtUtc ? new Date(res.servedAtUtc) : new Date();
+
+      try {
+        const ls = document.getElementById("load-status");
+        if (ls && res) {
+          const mode = res.refreshedStatus || "unknown";
+          const served = res.servedAtUtc || "--";
+          ls.textContent = `Loading points... [${mode}] served ${served}`;
+        }
+      } catch (_) {}
+
+      scheduleNextFetch();
+      updateLastUpdatedBanner();
+      updateTimerDisplay();
+
+      var meta = res && res.meta ? res.meta : {};
+      var banners = res && res.banners ? res.banners : { cwdBanner: "", eceBanner: "" };
+
+      window.ACTIVE_WWA_WFOS = (res && Array.isArray(res.wwaWfos)) ? res.wwaWfos : [];
+
+      var feats = (res && Array.isArray(res.features)) ? res.features : [];
+
+      onAllDataReceived([[feats], banners, [], meta]);
+
+      // Let the header make clear the next phase is status/ASOS update
+      setLoadStatus("Updating: ASOS...");
+      return fetchPointsPass_("overlay", forceServerRefresh);
+    })
+    .then(function (ov) {
+      if (fetchId !== window.__activeFetchId) return;
+
+      var featsOv = (ov && Array.isArray(ov.features)) ? ov.features : [];
+
+      if (!featsOv.length) {
+        if (window.__basePointsRendered) {
+          try { drainOverlayInstallQueue_(); } catch (_) {}
+        }
+        return;
+      }
+
+      window._pendingAsosOverlays = featsOv;
+
+      if (window.__basePointsRendered) {
+        try { applyPendingAsosOverlays_(); } catch (e) { console.warn(e); }
+      }
+    })
+    .catch(function (err) {
+      if (fetchId !== window.__activeFetchId) return;
+      onDataError(err);
+    });
+}
+
+
+function applyPendingAsosOverlays_() {
+  if (window.__asosApplied) return;
+
+  var ov = window._pendingAsosOverlays;
+  if (!Array.isArray(ov) || !ov.length) {
+    try { drainOverlayInstallQueue_(); } catch (_) {}
+    return;
+  }
+
+  // applyFilters is defined inside initializeApp()/ArcGIS require() scope.
+  // We expose it as window.applyFilters once the map initializes.
+  if (typeof window.applyFilters !== "function") {
+    setTimeout(function () {
+      try { applyPendingAsosOverlays_(); } catch (_) {}
+    }, 75);
+    return;
+  }
+
+  window.__asosApplied = true;
+  window._pendingAsosOverlays = null;
+
+  try {
+    features = (Array.isArray(features) ? features : []).concat(ov);
+  } catch (_) {
+    features = ov;
+  }
+
+  setLoadStatus("Updating: ASOS...");
+  try { window.applyFilters(); }
+  catch (e) { console.warn("applyFilters (after ASOS overlays) failed:", e); }
+
+  setTimeout(function () {
+    try { drainOverlayInstallQueue_(); } catch (_) {}
+  }, 0);
+}
+
+
+
+function setLoadStatus(msg){
+  const el = document.getElementById("load-status");
+  if (!el) return;
+  el.textContent = msg || "";
+}
+function clearLoadStatus(){
+  setLoadStatus("");
+}
+
+function overlayDisplayName_(name){
+  const map = {
+    asos: "ASOS",
+    radar: "RADAR",
+    wwa: "WWA",
+    rfc: "RFC",
+    wfo: "WFO",
+    cwsu: "CWSU",
+    mcc: "MCC",
+    reg: "REGION",
+    tz: "TIMEZONES"
+  };
+  return map[String(name || "").toLowerCase()] || String(name || "").toUpperCase();
+}
+
+function overlayPriority_(name){
+  const order = {
+    radar: 10,
+    wwa: 20,
+    rfc: 30,
+    wfo: 40,
+    cwsu: 50,
+    mcc: 60,
+    reg: 70,
+    tz: 80
+  };
+  return order[String(name || "").toLowerCase()] ?? 999;
+}
+
+function queueOverlayInstall_(name, layerId, fn) {
+  if (typeof fn !== "function") return;
+
+  window.__overlayInstallQueue = window.__overlayInstallQueue || [];
+
+  const key = String(name || "").toLowerCase();
+  const exists = window.__overlayInstallQueue.some(item => String(item.name || "").toLowerCase() === key);
+  if (exists) return;
+
+  window.__overlayInstallQueue.push({
+    name: key,
+    layerId: layerId || "",
+    fn: fn
+  });
+}
+
+function drainOverlayInstallQueue_() {
+  if (window.__overlayQueueRunning) return;
+  if (!window.__basePointsRendered) return;
+
+  window.__overlayInstallQueue = window.__overlayInstallQueue || [];
+  if (!window.__overlayInstallQueue.length) {
+    clearLoadStatus();
+    return;
+  }
+
+  window.__overlayInstallQueue.sort((a, b) => overlayPriority_(a.name) - overlayPriority_(b.name));
+
+  const item = window.__overlayInstallQueue.shift();
+  if (!item || typeof item.fn !== "function") {
+    setTimeout(drainOverlayInstallQueue_, 0);
+    return;
+  }
+
+  window.__overlayQueueRunning = true;
+  setLoadStatus("Updating: " + overlayDisplayName_(item.name) + "...");
+
+  try {
+    item.fn();
+  } catch (e) {
+    console.warn("Overlay install failed:", item.name, e);
+  }
+
+  const started = Date.now();
+  const waitMs = 8000;
+  const layerId = String(item.layerId || "");
+
+  function done() {
+    window.__overlayQueueRunning = false;
+
+    if (window.__overlayInstallQueue.length) {
+      setTimeout(drainOverlayInstallQueue_, 100);
+    } else {
+      clearLoadStatus();
+    }
+  }
+
+  if (!layerId || !window._esriView || !window._esriView.map) {
+    setTimeout(done, 600);
+    return;
+  }
+
+  (function pollForLayer(){
+    try {
+      const lyr = window._esriView.map.findLayerById(layerId);
+      if (lyr) {
+        setTimeout(done, 400);
+        return;
+      }
+    } catch (_) {}
+
+    if ((Date.now() - started) >= waitMs) {
+      done();
+      return;
+    }
+
+    setTimeout(pollForLayer, 150);
+  })();
+}
+
+function renderProgramLegend(){
+  const host = document.getElementById("programLegend");
+  if (!host) return;
+
+  const items = [
+    { key: "ASOS",      name: "ASOS (Station)" },
+    { key: "ACU",       name: "ACU" },
+    { key: "DCP",       name: "DCP" },
+    { key: "DOW",       name: "DoW" },
+    { key: "AWIPS",     name: "AWIPS" },
+    { key: "SBN",       name: "SBN" },
+    { key: "NWR",       name: "NWR" },
+    { key: "RADAR",     name: "RADAR" },
+    { key: "WSR88D",    name: "WSR88D" },
+    { key: "TDWR SPG",  name: "TDWR SPG" },
+    { key: "VWP",       name: "VWP" },
+    { key: "BUOY",      name: "BUOY" },
+    { key: "DART",      name: "DART" },
+    { key: "TAO",       name: "TAO" },
+    { key: "OTHER",     name: "Other Buoys" },
+    { key: "C-MAN",     name: "C-MAN" },
+    { key: "FACILITIES",name: "NWS Facility" },
+    { key: "UA",        name: "UA" },
+    { key: "__FUTURE__",name: "Reserved / Future Program" }
+  ];
+
+  function buildLegendSvg(program){
+    const meta = getProgramIconMeta(program);
+    const sym = window.getSymbol("up", 8, program, false);
+    return `<img src="${sym.url}" alt="${meta.label}" style="width:18px;height:18px;display:block;">`;
+  }
+
+  host.innerHTML = `
+    <div class="program-legend-grid">
+      ${items.map((item) => `
+        <div class="program-legend-item">
+          <span class="program-legend-badge" style="border:none;background:none;width:20px;height:20px;padding:0;">
+            ${buildLegendSvg(item.key)}
+          </span>
+          <span>${item.name}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function buildDownRowsFromFeatures() {
+  const downOnly = !!document.getElementById("showDownOnly")?.checked;
+
+  // If ShowOnlyDown is ON, the table/counter must follow what is drawn on the map.
+  // Otherwise, use the "status totals" set (ignores showDownOnly).
+  const feats = downOnly
+    ? (Array.isArray(window._currentFilteredFeatures) ? window._currentFilteredFeatures : [])
+    : (Array.isArray(window._statusTotalsFeatures) ? window._statusTotalsFeatures :
+       (Array.isArray(window._currentFilteredFeatures) ? window._currentFilteredFeatures : []));
+
+  const rows = [];
+  const seen = new Set();
+
+  const cleanProg = (s) => String(s || "").replace(/\s*\(PD\)\s*/i, "").trim();
+
+  const normalizeDisplay = (s) => {
+    const v = cleanProg(s).toUpperCase();
+    if (v === "DATA BUOY" || v === "BUOY") return "BUOY";
+    if (v === "DART BUOY" || v === "DART") return "DART";
+    if (v === "CMAN" || v === "C MAN" || v === "C-MAN") return "C-MAN";
+    if (v === "WSR-88D" || v === "WSR88D") return "WSR88D";
+    return cleanProg(s) || "—";
+  };
+
+  for (const f of feats) {
+    const p = f?.properties || {};
+    const st = normStatus(getStatusValue_(p));
+    const isOut = isOutageStatus_(st);
+
+    if (!isOut) continue;
+
+    const pid = String(p.pidAdj || p.pid || p.PID || p.siteId || "").trim().toUpperCase();
+    const sid = String(p.sid || p.SID || "").trim().toUpperCase();
+
+    // We'll decide displayId after we compute programDisplay (so UA can synthesize P+SID if needed)
+    let displayId = pid || sid;
+    if (!displayId) continue;
+
+    // WFO from feature (features already try to fill office server-side)
+    let wfo = String(p.office || p.WFO || "—").trim();
+
+    const pgma = String(p.pgma || p.PGMA || "").trim().toUpperCase();
+    const kind = String(p.kind || "").trim().toUpperCase();
+    const subtype = String(p.subtype || "").trim().toUpperCase();
+
+    // Default program display from type/program
+    let programDisplay = normalizeDisplay(p.type || p.programType || p.program || pgma);
+
+    if (pgma === "ASOS (PD)") {
+      const pgmaGroup = String(p.pgmaGroup || "").trim().toUpperCase();
+      const isAcu = (kind === "ACU");
+      const isDcp = kind.startsWith("DCP") || programDisplay === "DCP";
+      const isDoW = (pgmaGroup === "DOD/USN");
+
+      if (isAcu) programDisplay = "ACU";
+      else if (isDcp) programDisplay = "DCP";
+      else if (isDoW) programDisplay = "DOW";
+      else programDisplay = "ASOS";
+    }
+
+    // RADAR subtype display (WSR88D vs TDWR SPG)
+    if (pgma === "RADAR (PD)") {
+      programDisplay = normalizeDisplay(subtype || "RADAR");
+    }
+
+    // AWIPS: last column shows provider when present
+    if (programDisplay === "AWIPS") {
+      const svc = String(p.svcbuProvidedBy || "").trim();
+      if (svc) wfo = svc;
+    }
+
+    const key = `${displayId}|${programDisplay}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    rows.push({ site: displayId, program: programDisplay, wfo, status: st });
+
+  }
+
+  rows.sort((a, b) => a.program.localeCompare(b.program) || a.site.localeCompare(b.site));
+
+  return rows;
+}
+
+function statusBadgeHtml_(status) {
+  const st = normStatus(status);
+  if (st === "patching") return `<span class="status-badge status-patching" title="Patching">🟦</span>`;
+  if (st === "degraded") return `<span class="status-badge status-degraded" title="Degraded">🟨</span>`;
+  return `<span class="status-badge status-down" title="Down">🟥</span>`;
+}
+
+function updateDownCounter(){
+  const n = buildDownRowsFromFeatures().length;
+  const hdr = document.querySelector("#downSectionHeader span:first-child");
+  if (hdr) hdr.textContent = `Down Sites (${n})`;
+}
+
+function renderDownTable() {
+  const table = document.getElementById("downTable");
+  if (!table) return;
+
+  const list = buildDownRowsFromFeatures();
+
+  const PARENTS_IN_ORDER = ["ASOS", "AWIPS", "BUOYS", "FACILITIES", "NWR", "RADAR", "UA"];
+  const CHILD_TO_PARENT = new Map([
+    ["ACU", "ASOS"], ["DCP", "ASOS"], ["DOW", "ASOS"],
+    ["SBN", "AWIPS"],
+    ["BUOY", "BUOYS"], ["DART", "BUOYS"], ["TAO", "BUOYS"], ["OTHER", "BUOYS"],
+
+    ["TDWR SPG", "RADAR"], ["VWP", "RADAR"], ["WSR88D", "RADAR"],
+  ]);
+
+  const parentFor = (prog) => {
+    const k = normalizeProgramForFilter(prog);
+    return CHILD_TO_PARENT.get(k) || (PARENTS_IN_ORDER.includes(k) ? k : k);
+  };
+
+  // Group by parent
+  const byParent = Object.create(null);
+  for (const r of list) {
+    const parent = parentFor(r.program);
+    (byParent[parent] ||= []).push(r);
+  }
+
+  const parentsSorted = Object.keys(byParent).sort((a, b) => {
+    const ia = PARENTS_IN_ORDER.indexOf(a);
+    const ib = PARENTS_IN_ORDER.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+
+  let bodyHtml = "";
+
+  if (!parentsSorted.length) {
+    bodyHtml = `<tr><td colspan="4">No Down/Degraded/Patching/SVCBU sites</td></tr>`;
+  } else {
+    for (const parent of parentsSorted) {
+      const entries = byParent[parent].slice().sort((a, b) => a.site.localeCompare(b.site));
+
+      const storageKey = `downProgExpanded_${parent}`;
+      const expanded = (localStorage.getItem(storageKey) ?? "true") === "true";
+      const chev = expanded ? "▾" : "▸";
+
+      bodyHtml += `
+        <tr class="down-group-header" data-prog="${parent}">
+          <td colspan="4"><span class="chev">${chev}</span> ${parent} (${entries.length})</td>
+        </tr>
+      `;
+
+      for (const r of entries) {
+        bodyHtml += `
+          <tr class="down-item-row" data-parent="${parent}" style="${expanded ? "" : "display:none;"}">
+            <td class="status-cell">${statusBadgeHtml_(r.status)}</td>
+            <td>${escapeHtml_(r.site)}</td>
+            <td>${escapeHtml_(r.program)}</td>
+            <td>${escapeHtml_(r.wfo)}</td>
+          </tr>
+        `;
+      }
+    }
+  }
+
+  const awipsExpanded = (localStorage.getItem("downProgExpanded_AWIPS") ?? "true") === "true";
+  const lastColHeader = awipsExpanded ? "SVCBU By" : "Office";
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th style="width:44px;"></th>
+        <th>Site</th>
+        <th>Program</th>
+        <th>
+          Office/<br>
+          SVCBU By
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      ${bodyHtml}
+    </tbody>
+  `;
+
+  // One-time click handler for expand/collapse
+  if (!table.dataset.downWire) {
+    table.dataset.downWire = "1";
+    table.addEventListener("click", (e) => {
+      const tr = e.target?.closest?.("tr.down-group-header");
+      if (!tr) return;
+
+      const parent = String(tr.getAttribute("data-prog") || "").trim();
+      if (!parent) return;
+
+      const key = `downProgExpanded_${parent}`;
+      const expanded = (localStorage.getItem(key) ?? "true") === "true";
+      localStorage.setItem(key, expanded ? "false" : "true");
+
+      // Re-render to apply the show/hide + chevron state
+      renderDownTable();
+    });
+  }
+
+  try { updateDownCounter(); } catch(_) {}
+}
+
+/* ===== onAllDataReceived ===== */
+function onAllDataReceived([featureChunks, bannerData, _unusedOutagesList, meta]) {
+
+  setLoadStatus("Rendering points…");
+
+  const allFeatures = [].concat.apply([], featureChunks || []);
+
+  const data = {
+    geojson: { type: "FeatureCollection", features: allFeatures },
+    regions: meta?.regions || [],
+    types:   meta?.types   || [],
+    cwdBanner: bannerData?.cwdBanner || "",
+    eceBanner: bannerData?.eceBanner || "",
+  };
+
+    // ✅ Render CWD/ECE banners
+  renderCwdEceBanners_(data.cwdBanner, data.eceBanner);
+
+  features = Array.isArray(data.geojson?.features) ? data.geojson.features : [];
+
+  // ✅ Build filter UI BEFORE loading persisted selections
+  try {
+    populateCheckboxes("regionCheckboxes", meta?.regions || data.regions || [], "regionCheckbox");
+    buildOfficeTypeCheckboxes();
+    buildProgramsTree();
+  } catch (e) {
+    console.warn("Filter UI build failed:", e);
+  }
+
+  // ✅ If the map isn't ready yet, stash features and render as soon as it is.
+  // This fixes the race where data arrives before initializeApp()/require() finishes.
+  window._pendingFeaturesForRender = features;
+
+  (function tryRenderWhenReady() {
+    if (typeof window.updateMapAndTables === "function") {
+      const pf = Array.isArray(window._pendingFeaturesForRender) ? window._pendingFeaturesForRender : [];
+      window._pendingFeaturesForRender = null;
+
+      try {
+        window.updateMapAndTables(pf);
+      } catch (e) {
+        console.error("updateMapAndTables failed:", e);
+      }
+
+      // renderPoints() refreshes table/counters, but give it a small nudge in case
+      setTimeout(() => {
+        try { updateDownCounter(); } catch(e) {}
+        try { renderDownTable([]); } catch(e) {}
+        try { updateTypeBreakdown(); } catch(e) {}
+      }, 50);
+
+      clearLoadStatus();
+      return;
+    }
+
+    // Not ready yet – try again shortly
+    setTimeout(tryRenderWhenReady, 50);
+  })();
+}
+
+function onDataError(err) {
+  const t = document.getElementById('refresh-timer');
+  if (t) { t.textContent = '(Error)'; t.title = err?.message || String(err || ''); }
+
+  setLoadStatus("Error loading data");   // ✅ ADD
+
+  console.error(err);
+}
+
+/* ===== Header + In-map clock rail ===== */
+const MAP_CLOCK_STORAGE_KEY = "mapClockCollapsed_v3";
+let mapClockTimer_ = null;
+
+function formatClockTs_(date, timeZone, suffix){
+  try{
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).formatToParts(date);
+
+    const get = (type) => {
+      const hit = parts.find(p => p.type === type);
+      return hit ? hit.value : "";
+    };
+
+    const y  = get("year");
+    const m  = get("month");
+    const d  = get("day");
+    const hh = get("hour");
+    const mm = get("minute");
+
+    return `${y}-${m}-${d} ${hh}:${mm} ${suffix}`;
+  } catch(e){
+    return "--";
+  }
+}
+
+function updateMapClockBar_(now){
+  const ts = now instanceof Date ? now : new Date();
+
+  const values = {
+    "clock-guam":     formatClockTs_(ts, "Pacific/Guam", "ChST"),
+    "clock-pacific":  formatClockTs_(ts, "America/Los_Angeles", "PT"),
+    "clock-alaska":   formatClockTs_(ts, "America/Anchorage", "AK"),
+    "clock-hawaii":   formatClockTs_(ts, "Pacific/Honolulu", "HT"),
+    "clock-mountain": formatClockTs_(ts, "America/Denver", "MT"),
+    "clock-central":  formatClockTs_(ts, "America/Chicago", "CT"),
+    "clock-eastern":  formatClockTs_(ts, "America/New_York", "ET"),
+    "clock-zulu":     formatClockTs_(ts, "UTC", "UTC")
+  };
+
+  Object.entries(values).forEach(([id, text]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  });
+
+  positionMapClockBar_();
+}
+
+function positionMapClockBar_(){
+  const bar = document.getElementById("mapClockBar");
+  const main = document.getElementById("mainContainer");
+  if (!bar || !main) return;
+
+  const mainRect = main.getBoundingClientRect();
+  const zoomDock = window._zoomDock || document.getElementById("zoomDock");
+  const rightToggle = document.getElementById("toggleRightSidebarBtn");
+
+  let left = 56;
+  let top = 8;
+  let right = 340;
+
+  if (zoomDock) {
+    const z = zoomDock.getBoundingClientRect();
+    left = Math.max(48, Math.round(z.right - mainRect.left + 8));
+    top  = Math.max(6, Math.round(z.top - mainRect.top));
+  }
+
+  if (rightToggle) {
+    const rt = rightToggle.getBoundingClientRect();
+    right = Math.max(24, Math.round(mainRect.right - rt.left + 8));
+  }
+
+  bar.style.left = `${left}px`;
+  bar.style.top = `${top}px`;
+  bar.style.right = `${right}px`;
+}
+
+function pad2_(n){
+  return String(n).padStart(2, "0");
+}
+
+function parseUtcLikeDate_(value){
+  if (value == null || value === "") return null;
+
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return value;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  // Already in target display format:
+  // Tue Mar 17 2026 10:51:59 UTC
+  let m = s.match(
+    /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+UTC$/i
+  );
+  if (m) {
+    const MONTH_INDEX = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    return new Date(Date.UTC(
+      Number(m[4]),
+      MONTH_INDEX[m[2].slice(0,1).toUpperCase() + m[2].slice(1,3).toLowerCase()],
+      Number(m[3]),
+      Number(m[5]),
+      Number(m[6]),
+      Number(m[7])
+    ));
+  }
+
+  // Matches:
+  // 2026-03-13 23:00:00
+  // 2026/03/13 23:00:00
+  // 2026 03 13 23:00:00
+  // optional seconds, optional UTC/Z
+  m = s.match(
+    /^(\d{4})[-\/ ](\d{1,2})[-\/ ](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*(UTC|Z)?$/i
+  );
+  if (m) {
+    return new Date(Date.UTC(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4] || 0),
+      Number(m[5] || 0),
+      Number(m[6] || 0)
+    ));
+  }
+
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
+
+  return null;
+}
+
+function formatUnifiedUtcTs_(value){
+  const d = parseUtcLikeDate_(value);
+  if (!(d instanceof Date) || isNaN(d.getTime())) return "--";
+
+  const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()]} ${pad2_(d.getUTCDate())} ${d.getUTCFullYear()} ${pad2_(d.getUTCHours())}:${pad2_(d.getUTCMinutes())}:${pad2_(d.getUTCSeconds())} UTC`;
+}
+
+function formatHeaderNowTsWithSeconds_(date, suffix){
+  return formatUnifiedUtcTs_(date);
+}
+
+function formatIsoUtcForHeader_(date){
+  return formatUnifiedUtcTs_(date);
+}
+
+function formatPopupUtcFromAny_(value){
+  return formatUnifiedUtcTs_(value);
+}
+
+function updateLastUpdatedBanner(){
+  const now = new Date();
+
+  const currentEl = document.getElementById("current-time");
+  const updatedEl = document.getElementById("last-updated");
+
+  if (currentEl) {
+    currentEl.textContent = "Current Time: " + formatUnifiedUtcTs_(now);
+  }
+
+  if (updatedEl) {
+    updatedEl.textContent = "Last Updated: " + formatUnifiedUtcTs_(lastDataRefreshUtc);
+  }
+
+  updateMapClockBar_(now);
+}
+
+function initMapClockBar_(){
+  const bar = document.getElementById("mapClockBar");
+  const btn = document.getElementById("mapClockToggle");
+  if (!bar || !btn) return;
+
+  const applyState = (collapsed) => {
+    bar.classList.toggle("collapsed", !!collapsed);
+    bar.classList.toggle("expanded", !collapsed);
+    btn.textContent = collapsed ? "🕒" : "▾";
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.title = collapsed ? "Expand clocks" : "Collapse clocks";
+    try { localStorage.setItem(MAP_CLOCK_STORAGE_KEY, collapsed ? "true" : "false"); } catch(_) {}
+    positionMapClockBar_();
+  };
+
+  let collapsed = false;
+  try {
+    collapsed = localStorage.getItem(MAP_CLOCK_STORAGE_KEY) === "true";
+  } catch(_) {}
+
+  applyState(collapsed);
+
+  if (!btn.dataset.wired) {
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", () => {
+      applyState(!bar.classList.contains("collapsed"));
+    });
+  }
+
+  updateLastUpdatedBanner();
+
+  if (!mapClockTimer_) {
+    const tick = () => {
+      updateLastUpdatedBanner();
+
+      const now = new Date();
+      const delay = 1000 - now.getMilliseconds() + 10;
+      mapClockTimer_ = setTimeout(tick, Math.max(100, delay));
+    };
+
+    const now = new Date();
+    const firstDelay = 1000 - now.getMilliseconds() + 10;
+    mapClockTimer_ = setTimeout(tick, Math.max(100, firstDelay));
+  }
+
+  window.addEventListener("resize", positionMapClockBar_);
+  window.addEventListener("scroll", positionMapClockBar_, { passive: true });
+}
+
+/* ===== Helpers ===== */
+function escapeHtml_(s){
+  return String(s ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+
+function renderCwdEceBanners_(cwdText, eceText){
+  ensureCwdEceBannerStyles_();
+
+  let host = document.getElementById("banner-container");
+
+  // If banner-container is missing in Index.html, create it safely at the top
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "banner-container";
+    document.body.insertBefore(host, document.body.firstChild);
+  }
+
+  host.classList.add("cwd-ece-banners");
+
+  const cwd = String(cwdText || "").trim();
+  const ece = String(eceText || "").trim();
+
+  // Change these if you want different destinations
+  const BANNER_LINKS = {
+    CWD: "https://www.nco.ncep.noaa.gov/status/cwd/",
+    ECE: "https://www.nco.ncep.noaa.gov/status/cwd/"
+  };
+
+  const bannerLineHtml_ = (txt) => {
+    const s = String(txt || "").trim();
+    if (!s) return "";
+
+    const m = s.match(/^(CWD|ECE)\s*(.*)$/i);
+    if (!m) return escapeHtml_(s);
+
+    const typ = String(m[1] || "").toUpperCase();
+    const rest = String(m[2] || "").trim();
+    const href = BANNER_LINKS[typ] || "#";
+
+    return `<a class="banner-token" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml_(typ)}</a><span class="banner-rest">${rest ? " " + escapeHtml_(rest) : ""}</span>`;
+  };
+
+  let html = "";
+  if (cwd) html += `<div class="banner banner-cwd">${bannerLineHtml_(cwd)}</div>`;
+  if (ece) html += `<div class="banner banner-ece">${bannerLineHtml_(ece)}</div>`;
+
+  host.innerHTML = html;
+  host.style.display = html ? "flex" : "none";
+
+  try { positionMapClockBar_(); } catch(_) {}
+}
+
+function ensureCwdEceBannerStyles_() {
+  if (document.getElementById('cwdEceBannerStyles')) return;
+
+  const style = document.createElement('style');
+  style.id = 'cwdEceBannerStyles';
+  style.textContent = `
+    #banner-container.cwd-ece-banners{
+      display:flex;
+      flex-direction:column;
+      width:100%;
+    }
+    #banner-container .banner-link{
+      display:block;
+      text-decoration:none;
+    }
+    #banner-container .banner{
+      width:100%;
+      height:36px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:20px;
+      font-weight:800;
+      letter-spacing:.5px;
+      line-height:1;
+      margin:0;
+      padding:0;
+      text-align:center;
+    }
+    #banner-container .banner-cwd{ background:#d70000; color:#fff; }
+    #banner-container .banner-ece{ background:#ffd400; color:#000; }
+
+    /* Only the CWD/ECE token is a link */
+    #banner-container .banner .banner-token{
+      font-weight:900;
+      text-decoration:underline;
+      color:inherit;
+    }
+    #banner-container .banner .banner-token:visited{
+      color:inherit;
+    }
+
+    #banner-container .banner .banner-rest{
+      white-space:pre;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function populateCheckboxes(containerId, items, cssClass) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+
+  // Keep spelled-out region names; hide abbreviated ones like SR/CR/ER/WR, etc.
+  let list = Array.isArray(items) ? items.slice() : [];
+
+  if (containerId === 'regionCheckboxes') {
+    // If meta provides SR/CR/etc, map them to full names (DON'T drop them)
+    const REGION_CODE_TO_NAME = {
+      "SR": "Southern Region",
+      "CR": "Central Region",
+      "ER": "Eastern Region",
+      "WR": "Western Region",
+      "PR": "Pacific Region",
+      "AR": "Alaska Region"
+    };
+
+    list = list
+      .map(v => {
+        const s = String(v ?? '').trim();
+        if (!s) return "";
+        const up = s.toUpperCase();
+        return REGION_CODE_TO_NAME[up] || s;
+      })
+      .filter(Boolean);
+
+    // De-dupe
+    list = Array.from(new Set(list));
+  }
+
+  // Attribute-safe
+  const escAttr = (s) => String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // Text-safe
+  const escText = (s) => String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // Display-only label shortening for Regions
+  const regionDisplayLabel = (raw) => {
+    let s = String(raw ?? "").trim();
+
+    // Remove trailing "Region" (display only)
+    s = s.replace(/\s*region\s*$/i, "").trim();
+
+    // Special: NATL HDQTR/NC -> NATL HDQTR (display only)
+    if (s.toUpperCase() === "NATL HDQTR/NC") s = "NATL HDQTR";
+
+    return s;
+  };
+
+  el.innerHTML = list.map(v => {
+    const value = String(v ?? "").trim(); // KEEP value unchanged for logic/storage
+    const label = (containerId === "regionCheckboxes")
+      ? regionDisplayLabel(value)
+      : value;
+
+    return `<label><input type="checkbox" class="${escAttr(cssClass)}" value="${escAttr(value)}"> ${escText(label)}</label>`;
+  }).join('');
+}
+
+
+function updateTimerDisplay() {
+  const t = document.getElementById("refresh-timer");
+  if (!t) return;
+
+  if (!nextRefreshTime) {
+    t.textContent = "(Next refresh in --:--)";
+    return;
+  }
+
+  const remain = nextRefreshTime - Date.now();
+  const s = Math.max(Math.floor(remain / 1000), 0);
+  t.textContent = `(Next refresh in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")})`;
+}
+
+function saveFiltersToStorage(){
+  try {
+    const payload = {
+      f_pid:   document.getElementById("f_pid")?.value || "",
+      f_sid:   document.getElementById("f_sid")?.value || "",
+      f_wfo:   document.getElementById("f_wfo")?.value || "",
+      f_city:  document.getElementById("f_city")?.value || "",
+      f_state: document.getElementById("f_state")?.value || "",
+      f_any:   document.getElementById("f_any")?.value || "",
+
+      regions: Array.from(document.querySelectorAll(".regionCheckbox:checked")).map(cb => cb.value),
+      officeTypes: Array.from(document.querySelectorAll(".officeTypeCheckbox:checked")).map(cb => cb.value),
+      programs: Array.from(document.querySelectorAll(".programCheckbox:checked")).map(cb => cb.value),
+
+      timedRotation: !!document.getElementById("timedRotation")?.checked,
+      rotationPauseSeconds: Number(document.getElementById("rotationPauseSeconds")?.value || 5),
+
+      zoomOnFilter: !!document.getElementById("zoomOnFilter")?.checked,
+      buoyAgencyNws: !!document.getElementById("buoyAgencyNws")?.checked,
+      buoyAgencyNoaa: !!document.getElementById("buoyAgencyNoaa")?.checked,
+      buoyAgencyOther: !!document.getElementById("buoyAgencyOther")?.checked,
+      downOnly: !!document.getElementById("showDownOnly")?.checked,
+      hideDownDegraded: !!document.getElementById("hideDownDegraded")?.checked,
+      wwaOnly: !!document.getElementById("showWWAOnly")?.checked,
+      downAutoExpand: !!document.getElementById("downAutoExpand")?.checked,
+
+      v: 1
+    };
+    localStorage.setItem("filters", JSON.stringify(payload));
+  } catch(e){}
+}
+
+function loadFiltersFromStorage(){
+  try {
+    const raw = localStorage.getItem("filters");
+    if (!raw) {
+      document.querySelectorAll('.programCheckbox').forEach(cb => {
+        cb.checked = (String(cb.value) === "ASOS");
+      });
+
+      const rot = document.getElementById("timedRotation");
+      if (rot) rot.checked = false;
+
+      const pause = document.getElementById("rotationPauseSeconds");
+      if (pause) pause.value = 5;
+
+      return;
+    }
+    const f = JSON.parse(raw);
+
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v ?? ""); };
+    setVal("f_pid",   f.f_pid);
+    setVal("f_sid",   f.f_sid);
+    setVal("f_wfo",   f.f_wfo);
+    setVal("f_city",  f.f_city);
+    setVal("f_state", f.f_state);
+    setVal("f_any",   f.f_any);
+
+    const rot = document.getElementById("timedRotation");
+    if (rot && typeof f.timedRotation === "boolean") {
+      rot.checked = f.timedRotation;
+    }
+
+    const pause = document.getElementById("rotationPauseSeconds");
+    if (pause) {
+      const n = Number(f.rotationPauseSeconds);
+      pause.value = (Number.isFinite(n) && n > 0) ? n : 5;
+    }
+
+    const zoom = document.getElementById("zoomOnFilter");
+    if (zoom && typeof f.zoomOnFilter === "boolean") zoom.checked = f.zoomOnFilter;
+
+    const bNws = document.getElementById("buoyAgencyNws");
+    if (bNws && typeof f.buoyAgencyNws === "boolean") bNws.checked = f.buoyAgencyNws;
+
+    const bNoaa = document.getElementById("buoyAgencyNoaa");
+    if (bNoaa && typeof f.buoyAgencyNoaa === "boolean") bNoaa.checked = f.buoyAgencyNoaa;
+
+    const bOther = document.getElementById("buoyAgencyOther");
+    if (bOther && typeof f.buoyAgencyOther === "boolean") bOther.checked = f.buoyAgencyOther;
+
+    const downOnly = document.getElementById("showDownOnly");
+    if (downOnly && typeof f.downOnly === "boolean") {
+      downOnly.checked = f.downOnly;
+    }
+
+    const hideOut = document.getElementById("hideDownDegraded");
+    if (hideOut && typeof f.hideDownDegraded === "boolean") {
+      hideOut.checked = f.hideDownDegraded;
+    }
+
+    const wwaOnly = document.getElementById("showWWAOnly");
+    if (wwaOnly && typeof f.wwaOnly === "boolean") {
+      wwaOnly.checked = f.wwaOnly;
+    }
+
+    const ae = document.getElementById("downAutoExpand");
+    if (ae && typeof f.downAutoExpand === "boolean") {
+      ae.checked = f.downAutoExpand;
+    }
+
+    const mark = (selector, values) => {
+      const set = new Set((values || []).map(x => String(x)));
+      document.querySelectorAll(selector).forEach(cb => {
+        cb.checked = set.has(String(cb.value));
+      });
+    };
+
+    mark(".regionCheckbox", f.regions);
+    mark(".officeTypeCheckbox", f.officeTypes);
+    mark(".programCheckbox", f.programs);
+  } catch(e){}
+}
+
+/* =====================================================
+ * UI SETTINGS (Font + Icon scaling) — NEW
+ * ===================================================== */
+const UI_SETTINGS_KEY = "uiSettings_v1";
+
+function uiLoadSettings_(){
+  const d = { fontScale: 1, iconScale: 1, iconFontScale: 1, link: false, linkRatio: 1 };
+  try{
+    const raw = localStorage.getItem(UI_SETTINGS_KEY);
+    if (!raw) return d;
+    const j = JSON.parse(raw);
+    return {
+      fontScale: clamp(parseFloat(j.fontScale ?? d.fontScale), 0.5, 2.5),
+      iconScale: clamp(parseFloat(j.iconScale ?? d.iconScale), 0.5, 3.0),
+      iconFontScale: clamp(parseFloat(j.iconFontScale ?? d.iconFontScale), 0.5, 3.0),
+      link: !!(j.link ?? d.link),
+      linkRatio: clamp(parseFloat(j.linkRatio ?? d.linkRatio), 0.1, 10)
+    };
+  } catch(_){
+    return d;
+  }
+}
+function uiSaveSettings_(s){
+  try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(s)); } catch(_){}
+}
+function uiApplyToDom_(s){
+  // UI font scaling via CSS variable (Css.html overrides)
+  try{
+    document.documentElement.style.setProperty("--ui-font-scale", String(s.fontScale));
+  } catch(_){}
+  // Store icon settings globally so symbol scaling can see them
+  window.__uiIconScale = s.iconScale;
+  window.__uiIconFontScale = s.iconFontScale;
+}
+
+/* Symbol scaling: applied inside getSymbolCached() so we do NOT have to edit getSymbol() */
+function uiClone_(obj){
+  try { return structuredClone(obj); } catch(_){}
+  try { return JSON.parse(JSON.stringify(obj)); } catch(_){}
+  return obj;
+}
+function uiScaleSymbol_(sym){
+  const iconScale = clamp(parseFloat(window.__uiIconScale ?? 1), 0.5, 3.0);
+  const fontScale = clamp(parseFloat(window.__uiIconFontScale ?? 1), 0.5, 3.0);
+  const s = uiClone_(sym);
+
+  // SimpleMarkerSymbol
+  if (s && typeof s === "object" && typeof s.size === "number") {
+    s.size = s.size * iconScale;
+    if (s.outline && typeof s.outline.width === "number") s.outline.width = s.outline.width * iconScale;
+  }
+
+  // TextSymbol (or anything with font.size)
+  if (s && typeof s === "object" && s.font && typeof s.font.size === "number") {
+    s.font.size = s.font.size * fontScale;
+  }
+
+  // Composite: if your symbols are arrays (marker + text), scale each
+  if (Array.isArray(s)) {
+    return s.map(uiScaleSymbol_);
+  }
+
+  // Some symbol factories wrap marker/text in "symbol" fields
+  if (s && typeof s === "object" && s.symbol && typeof s.symbol === "object") {
+    s.symbol = uiScaleSymbol_(s.symbol);
+  }
+
+  return s;
+}
+
+function uiUpdateSettingsUi_(){
+  const s = uiLoadSettings_();
+  uiApplyToDom_(s);
+
+  const $font = document.getElementById("uiFontScale");
+  const $fontV= document.getElementById("uiFontScaleValue");
+  const $ico  = document.getElementById("uiIconScale");
+  const $icoV = document.getElementById("uiIconScaleValue");
+  const $icf  = document.getElementById("uiIconFontScale");
+  const $icfV = document.getElementById("uiIconFontScaleValue");
+  const $link = document.getElementById("uiLinkIconBtn");
+
+  const pct = (x) => Math.round(x * 100) + "%";
+
+  if ($font){ $font.value = String(s.fontScale.toFixed(2)); }
+  if ($fontV){ $fontV.textContent = pct(s.fontScale); }
+
+  if ($ico){ $ico.value = String(s.iconScale.toFixed(2)); }
+  if ($icoV){ $icoV.textContent = pct(s.iconScale); }
+
+  if ($icf){ $icf.value = String(s.iconFontScale.toFixed(2)); }
+  if ($icfV){ $icfV.textContent = pct(s.iconFontScale); }
+
+  if ($link){
+    $link.textContent = s.link ? "Icon Link: ON" : "Icon Link: OFF";
+  }
+}
+
+function uiWireSettingsUi_(){
+  const header = document.getElementById("settingsHeader");
+  const section = document.getElementById("settingsSection");
+  if (!header || !section) return;
+
+  // Use existing collapsible system if available
+  if (typeof initCollapsibleEx === "function") {
+    initCollapsibleEx("#settingsHeader", "#settingsSection", "settingsExpanded", false);
+  }
+
+  // Load/apply current
+  uiUpdateSettingsUi_();
+
+  let busy = false;
+
+  const onChange = (src) => {
+    if (busy) return;
+    busy = true;
+
+    const s = uiLoadSettings_();
+
+    const $font = document.getElementById("uiFontScale");
+    const $ico  = document.getElementById("uiIconScale");
+    const $icf  = document.getElementById("uiIconFontScale");
+
+    const nextFont = $font ? clamp(parseFloat($font.value), 0.8, 1.6) : s.fontScale;
+    let nextIcon   = $ico  ? clamp(parseFloat($ico.value),  0.7, 1.8) : s.iconScale;
+    let nextIconF  = $icf  ? clamp(parseFloat($icf.value),  0.7, 1.8) : s.iconFontScale;
+
+    // If linked, preserve ratio captured in s.linkRatio
+    if (s.link) {
+      if (src === "icon") {
+        nextIconF = clamp(nextIcon * s.linkRatio, 0.7, 1.8);
+        if ($icf) $icf.value = String(nextIconF.toFixed(2));
+      } else if (src === "font") {
+        nextIcon = clamp(nextIconF / s.linkRatio, 0.7, 1.8);
+        if ($ico) $ico.value = String(nextIcon.toFixed(2));
+      }
+    }
+
+    const out = {
+      fontScale: nextFont,
+      iconScale: nextIcon,
+      iconFontScale: nextIconF,
+      link: s.link,
+      linkRatio: s.linkRatio
+    };
+
+    uiSaveSettings_(out);
+    uiUpdateSettingsUi_();
+
+    // Force redraw (symbols + panels)
+     try { if (window.__symbolCache && typeof window.__symbolCache.clear === "function") window.__symbolCache.clear(); } catch(_){}
+    try { if (typeof renderProgramLegend === "function") renderProgramLegend(); } catch(_){}
+    try { if (typeof window.applyFilters === "function") window.applyFilters(); } catch(_){}
+
+    busy = false;
+  };
+
+  const $font = document.getElementById("uiFontScale");
+  const $ico  = document.getElementById("uiIconScale");
+  const $icf  = document.getElementById("uiIconFontScale");
+  const $link = document.getElementById("uiLinkIconBtn");
+  const $rst  = document.getElementById("uiResetBtn");
+  const $ref  = document.getElementById("uiRefreshBtn"); // <-- single declaration
+
+  if ($font) $font.addEventListener("input", () => onChange("ui"));
+  if ($ico)  $ico.addEventListener("input", () => onChange("icon"));
+  if ($icf)  $icf.addEventListener("input", () => onChange("font"));
+
+  if ($link) {
+    $link.addEventListener("click", () => {
+      const s = uiLoadSettings_();
+      const next = { ...s };
+      next.link = !s.link;
+
+      // When turning ON, capture the current ratio (font/icon) so it stays consistent
+      if (next.link) {
+        const icon = clamp(parseFloat(document.getElementById("uiIconScale")?.value ?? s.iconScale), 0.7, 1.8);
+        const fnt  = clamp(parseFloat(document.getElementById("uiIconFontScale")?.value ?? s.iconFontScale), 0.7, 1.8);
+        next.linkRatio = (icon > 0) ? (fnt / icon) : 1;
+      }
+
+      uiSaveSettings_(next);
+      uiUpdateSettingsUi_();
+
+      // Trigger redraw
+      try { if (window.__symbolCache && typeof window.__symbolCache.clear === "function") window.__symbolCache.clear(); } catch(_){}
+      try { if (typeof renderProgramLegend === "function") renderProgramLegend(); } catch(_){}
+      try { if (typeof window.applyFilters === "function") window.applyFilters(); } catch(_){}
+      });
+  }
+
+  if ($rst) {
+    $rst.addEventListener("click", () => {
+      const d = { fontScale: 1, iconScale: 1, iconFontScale: 1, link: false, linkRatio: 1 };
+      uiSaveSettings_(d);
+      uiUpdateSettingsUi_();
+      try { if (window.__symbolCache && typeof window.__symbolCache.clear === "function") window.__symbolCache.clear(); } catch(_){}
+      try { if (typeof renderProgramLegend === "function") renderProgramLegend(); } catch(_){}
+      try { if (typeof window.applyFilters === "function") window.applyFilters(); } catch(_){}
+      });
+  }
+
+  if ($ref) {
+    $ref.addEventListener("click", () => {
+      try { fetchData(true); } catch (e) { console.warn("UI Refresh failed:", e); }
+    });
+  }
+}
+
+// Ensure wiring happens even if init code order changes
+window.addEventListener("load", () => {
+  try{
+    const s = uiLoadSettings_();
+    uiApplyToDom_(s);
+    uiWireSettingsUi_();
+  } catch(_){}
+
+  try{
+    initMapClockBar_();
+  } catch(e){
+    console.warn("Map clock init failed:", e);
+  }
+}, { once: true });
+
+
+/* ===== Map persistence helpers (restore these!) ===== */
+function saveMapZoom(z){
+  try { localStorage.setItem("mapZoom", String(z)); } catch(e){}
+}
+function loadMapZoom(){
+  try {
+    const v = parseFloat(localStorage.getItem("mapZoom"));
+    return Number.isFinite(v) ? v : null;
+  } catch(e){ return null; }
+}
+function saveMapCenter(c){
+  try {
+    localStorage.setItem("mapCenter", JSON.stringify([c.longitude, c.latitude]));
+  } catch(e){}
+}
+function loadMapCenter(){
+  try {
+    const raw = localStorage.getItem("mapCenter");
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length < 2) return null;
+    const lon = parseFloat(arr[0]), lat = parseFloat(arr[1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    return [lon, lat];
+  } catch(e){
+    return null;
+  }
+}
+function saveBasemap(b){
+  try { localStorage.setItem("mapBasemap", b || "osm"); } catch(e){}
+}
+function loadBasemap(){
+  try { return localStorage.getItem("mapBasemap"); } catch(e){ return null; }
+}
+
+/* ===== Robust collapsibles ===== */
+function $first(selectorList) {
+  const list = selectorList.split(',').map(s => s.trim()).filter(Boolean);
+  for (const sel of list) { const el = document.querySelector(sel); if (el) return el; }
+  return null;
+}
+function initCollapsibleEx(headerSel, contentSel, storageKey, defaultOpen = true){
+  const header = $first(headerSel);
+  const content = $first(contentSel);
+  if (!header || !content) return false;
+
+  if (!content.dataset.origDisplay) {
+    const v = getComputedStyle(content).display;
+    content.dataset.origDisplay = (v && v !== 'none') ? v : 'block';
+  }
+  const saved = localStorage.getItem(storageKey);
+  let expanded = (saved === null) ? defaultOpen : (saved === 'true');
+
+  function applyState(){
+    header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const chev = header.querySelector('.chev');
+    if (chev) chev.textContent = expanded ? '▾' : '▸';
+    if (expanded) {
+      content.style.removeProperty('display');
+      if (getComputedStyle(content).display === 'none') content.style.display = content.dataset.origDisplay || 'block';
+      content.classList.remove('is-collapsed');
+    } else {
+      content.style.display = 'none';
+      content.classList.add('is-collapsed');
+    }
+  }
+  applyState();
+
+    const onToggle = () => {
+    expanded = !expanded;
+    localStorage.setItem(storageKey, String(expanded));
+    applyState();
+  };
+
+  // ✅ Prevent duplicate listeners if wiring runs more than once
+  if (header.dataset.collapseWired !== "1") {
+    header.dataset.collapseWired = "1";
+
+    header.addEventListener("click", onToggle);
+
+    // Make header keyboard-accessible once
+    if (!header.hasAttribute("tabindex")) header.setAttribute("tabindex", "0");
+
+    header.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onToggle();
+      }
+    });
+  }
+
+  return true;
+}
+
+function wireCollapsiblesWithRetry(maxTries = 50) {
+  let tries = 0;
+
+  const tryWire = () => {
+    tries++;
+
+    const okRegion = initCollapsibleEx(
+      '#regionToggleBtn, #regionHeader',
+      '#regionCheckboxes',
+      'regionSectionExpanded',
+      true
+    );
+
+    const okPrograms = initCollapsibleEx(
+      '#programsHeader',
+      '#programsSection',
+      'programsExpanded',
+      true
+    );
+
+    // NEW: Filters container
+    initCollapsibleEx('#filtersHeader', '#filtersSection', 'filtersExpanded', false);
+
+    initCollapsibleEx('#advSearchHeader', '#advSearchSection', 'advSearchExpanded', true);
+    initCollapsibleEx('#officeTypeHeader', '#officeTypeSection', 'officeTypeExpanded', true);
+    initCollapsibleEx('#mapHeader', '#mapSection', 'mapExpanded', true);
+    initCollapsibleEx('#overlaysHeader', '#overlaysSection', 'overlaysExpanded', true);
+    initCollapsibleEx('#radarSectionHeader', '#radarSection', 'radarSectionExpanded', true);
+    initCollapsibleEx('#wwaSectionHeader', '#wwaSection', 'wwaSectionExpanded', true);
+    initCollapsibleEx('#wfoSectionHeader', '#wfoSection', 'wfoSectionExpanded', true);
+    initCollapsibleEx('#rfcSectionHeader', '#rfcSection', 'rfcSectionExpanded', true);
+    initCollapsibleEx("#cwsuSectionHeader", "#cwsuSection", 'cwsuSectionExpanded', true);
+    initCollapsibleEx("#mccSectionHeader", "#mccSection", "mccSectionExpanded", false);
+    initCollapsibleEx("#regSectionHeader", "#regSection", "regSectionExpanded", false);
+    initCollapsibleEx("#tzSectionHeader", "#tzSection", "tzSectionExpanded", false);
+    initCollapsibleEx('#legendHeader', '#legendSection', 'legendExpanded', true);
+    initCollapsibleEx('#statusTotalsHeader', '#statusTotalsSection', 'statusTotalsExpanded', true);
+
+    initCollapsibleEx('#downSectionHeader', '#downSection', 'downSectionExpanded', true);
+
+    // Only require region+programs to stop retrying
+    if (okRegion && okPrograms) return;
+
+    if (tries < maxTries) {
+      setTimeout(tryWire, 100);
+    } else {
+      console.warn('Collapsibles: forced visible after retries.');
+      // Force the known ones visible if needed
+      const rc = document.querySelector('#regionCheckboxes');
+      const pc = document.querySelector('#programsSection');
+      if (rc) rc.style.display = rc.dataset.origDisplay || 'block';
+      if (pc) pc.style.display = pc.dataset.origDisplay || 'block';
+    }
+  };
+
+  tryWire();
+}
+
+
+
+/* ===== Map & UI ===== */
+function initializeApp() {
+  if (window.isAppInitialized) return;
+  window.isAppInitialized = true;
+  setLoadStatus("Loading map…");
+
+  const ac = document.getElementById('app-container');
+  if (ac) ac.style.display = 'flex';
+
+  require(
+      ["esri/Map", "esri/views/MapView", "esri/Graphic", "esri/layers/GraphicsLayer", "esri/widgets/Zoom", "esri/geometry/Extent", "esri/geometry/Point"],
+      function (EsriMap, MapView, Graphic, GraphicsLayer, Zoom, Extent, Point) {
+
+      const NativeMap = globalThis.Map; // <-- real JS Map
+
+      let currentFilteredFeatures = [];
+      let renderToken = 0; // prevents overlapping renders
+
+      const map = new EsriMap({ basemap: loadBasemap() || "osm" });
+
+      const view = new MapView({
+        container: "viewDiv",
+        map,
+
+        // Match Validation Map behavior: reasonable CONUS default,
+        // but we still respect any saved center/zoom if present.
+        center: loadMapCenter() || [-100, 38],
+        zoom:   loadMapZoom()   || 4,
+
+        // Make zoom & boundaries behave like Validation Map
+        constraints: {
+          // Allow navigation across the full world; don't box the user in
+          geometry: null,
+
+          // Can zoom out a bit, and fairly far in
+          minZoom: 3,
+          maxZoom: 23,
+
+          // Smooth (continuous) zooming, no rotation
+          snapToZoom: false,
+          rotationEnabled: false
+        },
+
+        popup: {
+          dockEnabled: true,
+          dockOptions: { position: "top-right", breakpoint: false, buttonEnabled: false },
+          visibleElements: { collapseButton: false }
+        }
+      });
+
+      window._esriView = view;
+
+      // ======================================================
+      // Lazy-load heavy overlays (CWSU + WFO) only when toggled
+      // ======================================================
+      function setupLazyCwsuWfoOverlays() {
+        // Track one-time installation
+        window.__lazyOverlayInstalled = window.__lazyOverlayInstalled || { cwsu: false, wfo: false };
+
+        const CWSU_VIS_KEY = "cwsuVisible"; // stored as "true"/"false"
+        const WFO_VIS_KEY  = "wfoVisible";  // stored as "true"/"false"
+        const WFO_OP_KEY   = "wfoOpacity";  // "0.00" .. "1.00"
+
+        const cToggle = document.getElementById("cwsuToggle");
+        const wToggle = document.getElementById("wfoToggle");
+        const wRange  = document.getElementById("wfoOpacity");
+        const wLabel  = document.getElementById("wfoOpacityValue");
+
+        // Ensure keys exist so installers don't default to ON
+        try {
+          if (localStorage.getItem(CWSU_VIS_KEY) == null) localStorage.setItem(CWSU_VIS_KEY, "false");
+          if (localStorage.getItem(WFO_VIS_KEY)  == null) localStorage.setItem(WFO_VIS_KEY,  "false");
+          if (localStorage.getItem(WFO_OP_KEY)   == null) localStorage.setItem(WFO_OP_KEY,   "0.85");
+        } catch (_) {}
+
+        const readBool = (key, def=false) => {
+          try {
+            const v = localStorage.getItem(key);
+            if (v == null) return def;
+            return String(v).trim().toLowerCase() === "true";
+          } catch (_) { return def; }
+        };
+
+        const writeBool = (key, val) => {
+          try { localStorage.setItem(key, val ? "true" : "false"); } catch (_) {}
+        };
+
+        const readOpacity = (key, def=0.85) => {
+          try {
+            const v = parseFloat(localStorage.getItem(key));
+            return Number.isFinite(v) ? v : def;
+          } catch (_) { return def; }
+        };
+
+        const writeOpacity = (key, val) => {
+          try { localStorage.setItem(key, String(val)); } catch (_) {}
+        };
+
+        // Layer IDs used by your overlay installers
+        const getCwsuLayer = () => map.findLayerById("cwsuFootprintLayer");
+        const getWfoLayer  = () => map.findLayerById("wfoFootprintLayer");
+
+        // Initialize UI from storage (default OFF)
+        if (cToggle) cToggle.checked = readBool(CWSU_VIS_KEY, false);
+        if (wToggle) wToggle.checked = readBool(WFO_VIS_KEY,  false);
+
+        // Initialize WFO opacity UI even if layer not loaded yet
+        const initWfoOp = readOpacity(WFO_OP_KEY, 0.85);
+        if (wRange) wRange.value = String(initWfoOp);
+        if (wLabel) wLabel.textContent = `${Math.round(initWfoOp * 100)}%`;
+
+        // ---- CWSU toggle ----
+        if (cToggle && cToggle.dataset.lazyWired !== "1") {
+          cToggle.dataset.lazyWired = "1";
+
+          cToggle.addEventListener("change", () => {
+            const on = !!cToggle.checked;
+            writeBool(CWSU_VIS_KEY, on);
+
+            const layer = getCwsuLayer();
+            if (layer) {
+              layer.visible = on;
+              return;
+            }
+
+            // Not installed yet: only install when turning ON
+            if (on && !window.__lazyOverlayInstalled.cwsu) {
+              window.__lazyOverlayInstalled.cwsu = true;
+              if (typeof window.installCWSU === "function") {
+                window.installCWSU({ view, map });
+              } else {
+                console.warn("installCWSU() not found.");
+              }
+            }
+          });
+
+          // If user had it ON from prior session, defer install until base points finish rendering.
+          if (cToggle.checked && !window.__lazyOverlayInstalled.cwsu) {
+            const ensureInstalled = () => {
+              if (window.__lazyOverlayInstalled.cwsu) return;
+              window.__lazyOverlayInstalled.cwsu = true;
+              if (typeof window.installCWSU === "function") {
+                window.installCWSU({ view, map });
+              }
+            };
+
+            if (window.__basePointsRendered) ensureInstalled();
+            else {
+              queueOverlayInstall_("cwsu", "cwsuFootprintLayer", ensureInstalled);
+              window.__overlayInstallQueue.push(ensureInstalled);
+            }
+          }
+        }
+
+        // ---- WFO toggle + opacity ----
+        if (wToggle && wToggle.dataset.lazyWired !== "1") {
+          wToggle.dataset.lazyWired = "1";
+
+          wToggle.addEventListener("change", () => {
+            const on = !!wToggle.checked;
+            writeBool(WFO_VIS_KEY, on);
+
+            const layer = getWfoLayer();
+            if (layer) {
+              layer.visible = on;
+              return;
+            }
+
+            // Not installed yet: only install when turning ON
+            if (on && !window.__lazyOverlayInstalled.wfo) {
+              window.__lazyOverlayInstalled.wfo = true;
+              if (typeof window.installWFO === "function") {
+                window.installWFO({ view, map });
+
+                // Apply stored opacity after install (give it a tick)
+                setTimeout(() => {
+                  const lyr = getWfoLayer();
+                  if (lyr) {
+                    const op = readOpacity(WFO_OP_KEY, 0.85);
+                    lyr.opacity = op;
+                  }
+                }, 250);
+              } else {
+                console.warn("installWFO() not found.");
+              }
+            }
+          });
+
+          // If user had it ON from prior session, defer install until base points finish rendering.
+          if (wToggle.checked && !window.__lazyOverlayInstalled.wfo) {
+            const ensureInstalled = () => {
+              if (window.__lazyOverlayInstalled.wfo) return;
+              window.__lazyOverlayInstalled.wfo = true;
+              if (typeof window.installWFO === "function") {
+                window.installWFO({ view, map });
+                setTimeout(() => {
+                  const lyr = getWfoLayer();
+                  if (lyr) {
+                    const op = readOpacity(WFO_OP_KEY, 0.85);
+                    lyr.opacity = op;
+                  }
+                }, 250);
+              }
+            };
+
+            if (window.__basePointsRendered) ensureInstalled();
+            else {
+              queueOverlayInstall_("wfo", "wfoFootprintLayer", ensureInstalled);
+              window.__overlayInstallQueue.push(ensureInstalled);
+            }
+          }
+        }
+
+        // Opacity slider wiring (works whether or not layer is installed yet)
+        if (wRange && wRange.dataset.lazyWired !== "1") {
+          wRange.dataset.lazyWired = "1";
+
+          const applyOpacity = () => {
+            const v = parseFloat(wRange.value);
+            const op = (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.85);
+            writeOpacity(WFO_OP_KEY, op);
+            if (wLabel) wLabel.textContent = `${Math.round(op * 100)}%`;
+
+            const layer = getWfoLayer();
+            if (layer) layer.opacity = op;
+          };
+
+          wRange.addEventListener("input", applyOpacity);
+          wRange.addEventListener("change", applyOpacity);
+
+          // Apply once on init
+          applyOpacity();
+        }
+      }
+
+      // ✅ IMPORTANT: actually wire the CWSU/WFO toggles (otherwise WFO/CWSU never install)
+      try { setupLazyCwsuWfoOverlays(); }
+      catch (e) { console.error("setupLazyCwsuWfoOverlays failed:", e); }
+
+
+      // ======================================================
+      // Overlay loading strategy (startup performance)
+      // ======================================================
+      // Heavy overlays are installed only when first turned ON (but visibility is still persisted).
+      (function setupOverlayLazyGates() {
+        // ---- localStorage helpers ----
+        const lsGet = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+        const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+        const readBool = (k, defVal=false) => {
+          const v = lsGet(k);
+          if (v == null) return defVal;
+          try { return !!JSON.parse(v); } catch (_) { return String(v).trim().toLowerCase() === "true"; }
+        };
+        const writeBool = (k, val) => lsSet(k, JSON.stringify(!!val));
+
+        // Generic lazy gate for overlays that expose window[installerFn]({view,map})
+        function lazyGate({ name, toggleId, installerFn, layerId, visKey, defaultVis=false }) {
+          const tgl = document.getElementById(toggleId);
+          if (!tgl) return;
+
+          // first-run default
+          if (lsGet(visKey) == null) writeBool(visKey, !!defaultVis);
+
+          // sync checkbox
+          tgl.checked = readBool(visKey, !!defaultVis);
+
+          const installedFlag = `__${name}Installed`;
+
+          const getLayer = () => {
+            try { return (map && typeof map.findLayerById === "function") ? map.findLayerById(layerId) : null; }
+            catch (_) { return null; }
+          };
+
+          const ensureInstalled = () => {
+            if (window[installedFlag]) return;
+            const fn = window[installerFn];
+            if (typeof fn !== "function") {
+              console.warn(`[${name}] ${installerFn}() not found (did the overlay file load?)`);
+              return;
+            }
+            window[installedFlag] = true;
+            try { fn({ view, map }); } catch (e) { console.error(e); }
+          };
+
+          // wire once
+          if (tgl.dataset.lazyWired === "1") return;
+          tgl.dataset.lazyWired = "1";
+
+          tgl.addEventListener("change", () => {
+            const on = !!tgl.checked;
+            writeBool(visKey, on);
+
+            const layer = getLayer();
+            if (layer) {
+              layer.visible = on;
+              return;
+            }
+            if (on) ensureInstalled();
+          });
+
+          // If persisted ON, do NOT install until base points are rendered.
+          // This prevents heavy overlays from competing with the initial point load.
+          if (tgl.checked) {
+            if (window.__basePointsRendered) {
+              ensureInstalled();
+            } else {
+              queueOverlayInstall_(name, layerId, ensureInstalled);
+              window.__overlayInstallQueue.push(ensureInstalled);
+            }
+          }
+
+        }
+
+        // Timezones: special (creates both a FeatureLayer + DOM overlay)
+        (function setupLazyTimezonesOverlay() {
+          const tgl = document.getElementById("tzToggle");
+          if (!tgl) return;
+
+          if (lsGet("tzVisible") == null) writeBool("tzVisible", false);
+          if (lsGet("tzOpacity") == null) lsSet("tzOpacity", "0.35");
+
+          tgl.checked = readBool("tzVisible", false);
+
+          if (tgl.dataset.tzLazyWired === "1") return;
+          tgl.dataset.tzLazyWired = "1";
+
+          const ensureInstalled = () => {
+            if (window.__tzInstalled) return;
+            if (typeof window.installTimezones !== "function") {
+              console.warn("[TZ] installTimezones() not found.");
+              return;
+            }
+            window.__tzInstalled = true;
+            try { window.installTimezones({ view, map }); } catch (e) { console.error(e); }
+          };
+
+          tgl.addEventListener("change", () => {
+            const on = !!tgl.checked;
+            writeBool("tzVisible", on);
+            if (on) ensureInstalled();
+          });
+
+          if (tgl.checked) {
+            if (window.__basePointsRendered) ensureInstalled();
+            else queueOverlayInstall_("tz", "tzTopOverlay", ensureInstalled);
+          }
+        })();
+
+        // Lazy-gate the remaining overlays
+        lazyGate({ name: "rfc",   toggleId: "rfcToggle",   installerFn: "installRFC",    layerId: "rfcFootprintLayer",    visKey: "rfcVisible",    defaultVis: false });
+        lazyGate({ name: "mcc",   toggleId: "mccToggle",   installerFn: "installMCC",    layerId: "mccFootprintLayer",    visKey: "mccVisible",    defaultVis: false });
+        lazyGate({ name: "reg",   toggleId: "regToggle",   installerFn: "installRegion", layerId: "regionFootprintLayer", visKey: "regVisible",    defaultVis: false });
+        lazyGate({ name: "radar", toggleId: "radarToggle", installerFn: "installRadar",  layerId: "radarReflLayer",       visKey: "radarVisible",  defaultVis: false });
+        lazyGate({ name: "wwa",   toggleId: "wwaToggle",   installerFn: "installWWA",    layerId: "wwaLayer",            visKey: "wwaVisible",    defaultVis: false });
+      })();
+
+
+
+      // Custom zoom dock
+      try { view.ui.remove("zoom"); } catch (_) {}
+      const zoomDock = document.createElement("div");
+      zoomDock.id = "zoomDock";
+      zoomDock.style.position = "absolute";
+      zoomDock.style.top = "40px";
+      zoomDock.style.left = "300px";
+      zoomDock.style.zIndex = "5";
+      document.getElementById("mainContainer").appendChild(zoomDock);
+      new Zoom({ view, container: zoomDock });
+      window._zoomDock = zoomDock;
+
+      const graphicsLayer = new GraphicsLayer();
+      map.add(graphicsLayer);
+
+      // --- Incremental point update index (key -> Graphic) ---
+      window._graphicIndex = new NativeMap();
+      const graphicIndex = window._graphicIndex;
+
+      dbg("graphicIndex ctor:", graphicIndex?.constructor?.name, "size:", graphicIndex?.size);
+      dbg("isNativeMap?", graphicIndex instanceof NativeMap);
+
+      // --- Symbol cache: key -> picture-marker symbol ---
+      const symbolCache = new NativeMap();
+
+      // Zoom helper (Extent-based, Pacific-friendly, OUTLIER-SMART for global programs)
+      function zoomToFeatures_(featureList) {
+        const view = window._esriView;
+        if (!view || !Array.isArray(featureList) || !featureList.length) return;
+
+        // Collect valid points
+        const pts = [];
+        for (const f of featureList) {
+          const c = f?.geometry?.coordinates || [];
+          const lon = Number(c[0]);
+          const lat = Number(c[1]);
+          if (Number.isFinite(lon) && Number.isFinite(lat)) pts.push({ lon, lat });
+        }
+        if (!pts.length) return;
+
+        // 1 point: zoom in close
+        if (pts.length === 1) {
+          const vp = view.padding || { left:0, right:0, top:0, bottom:0 };
+          const goPad = {
+            left: vp.left || 0,
+            right: vp.right || 0,
+            top: vp.top || 0,
+            bottom: vp.bottom || 0
+          };
+
+          view.goTo(
+            { center: [pts[0].lon, pts[0].lat], zoom: Math.max(10, view.zoom || 4) },
+            { animate: true, duration: 450, padding: goPad }
+          ).catch(e => console.warn("zoomToFeatures_ rejected:", e));
+
+          return;
+        }
+
+        const min = (a) => a.reduce((m, v) => Math.min(m, v), +Infinity);
+        const max = (a) => a.reduce((m, v) => Math.max(m, v), -Infinity);
+        const median = (arr) => {
+          const a = arr.slice().sort((x, y) => x - y);
+          const m = Math.floor(a.length / 2);
+          return (a.length % 2) ? a[m] : (a[m - 1] + a[m]) / 2;
+        };
+
+        // ---- NEW: AOI-based "core focus" when points are global ----
+        // These are just for choosing a zoom TARGET subset (we still render everything).
+        const AOIS = [
+          // Broad NWS-ish North America focus (CONUS + AK + HI + PR-ish)
+          { name: "NA",  xmin: -170, xmax:  -45, ymin:   5, ymax:  75, crossesDateline: false, fallbackCenter: [-105, 38] },
+          // Dateline-crossing Pacific focus (useful when points spread across AK/HI/Pac)
+          { name: "PAC", xmin:  150, xmax: -110, ymin: -20, ymax:  70, crossesDateline: true,  fallbackCenter: [-160, 20] },
+        ];
+
+        const inAoi = (lon, lat, aoi) => {
+          if (lat < aoi.ymin || lat > aoi.ymax) return false;
+          if (!aoi.crossesDateline) return (lon >= aoi.xmin && lon <= aoi.xmax);
+          // crosses dateline: e.g. 150E .. -110W
+          return (lon >= aoi.xmin || lon <= aoi.xmax);
+        };
+
+        // pick AOI with most points inside
+        let best = null;
+        let bestCount = -1;
+        for (const aoi of AOIS) {
+          let c = 0;
+          for (const p of pts) if (inAoi(p.lon, p.lat, aoi)) c++;
+          if (c > bestCount) { bestCount = c; best = aoi; }
+        }
+
+        // If a meaningful chunk of points fall inside an AOI, use only those for zoom target.
+        // (Prevents UA/BUOYS global points from forcing a world view.)
+        const minNeeded = Math.max(10, Math.floor(pts.length * 0.15)); // 15% or 10 points
+        const zoomPts = (best && bestCount >= minNeeded)
+          ? pts.filter(p => inAoi(p.lon, p.lat, best))
+          : pts;
+
+        // ---- Wrap-safe extent building (your original logic, applied to zoomPts) ----
+        const lons = zoomPts.map(p => p.lon);
+        const lats = zoomPts.map(p => p.lat);
+
+        const xminRaw = min(lons), xmaxRaw = max(lons);
+        const ymin = min(lats), ymax = max(lats);
+
+        const rawLonSpan = xmaxRaw - xminRaw;
+        const latSpan = ymax - ymin;
+
+        // Try wrapped longitudes (0..360) to handle dateline nicely
+        const lons360 = lons.map(x => (x < 0 ? x + 360 : x));
+        const xmin360 = min(lons360), xmax360 = max(lons360);
+        const wrapLonSpan = xmax360 - xmin360;
+
+        const useWrapped = wrapLonSpan < rawLonSpan;
+        const lonSpan = useWrapped ? wrapLonSpan : rawLonSpan;
+
+        // If STILL extremely wide after AOI attempt, do a reasonable regional fallback
+        const WIDE_SPAN_DEG = 150;
+        if (Math.max(lonSpan, latSpan) >= WIDE_SPAN_DEG) {
+          const c = best?.fallbackCenter || [-160, 20]; // Pacific-leaning fallback
+          view.goTo({ center: c, zoom: 3.5 }, { animate: true, duration: 450 })
+            .catch(e => console.warn("zoomToFeatures_ rejected:", e));
+          return;
+        }
+
+        const refLon = (() => {
+          if (useWrapped) {
+            const m360 = median(lons360);
+            return (m360 > 180) ? (m360 - 360) : m360;
+          }
+          return median(lons);
+        })();
+
+        const unwrapLon = (lon, ref) => {
+          let x = lon;
+          while (x - ref > 180) x -= 360;
+          while (x - ref < -180) x += 360;
+          return x;
+        };
+
+        const adjLons = lons.map(l => unwrapLon(l, refLon));
+        let xmin = min(adjLons);
+        let xmax = max(adjLons);
+
+        // shift back into [-180, 180] if needed
+        let shift = 0;
+        if (xmax > 180) shift = -360;
+        else if (xmin < -180) shift = 360;
+        xmin += shift;
+        xmax += shift;
+
+        const MIN_SPAN_DEG = 0.8;
+        const spanLon = Math.max(xmax - xmin, MIN_SPAN_DEG);
+        const spanLat = Math.max(ymax - ymin, MIN_SPAN_DEG);
+
+        const padLon = Math.max(spanLon * 0.12, MIN_SPAN_DEG * 0.5);
+        const padLat = Math.max(spanLat * 0.12, MIN_SPAN_DEG * 0.5);
+
+        const extent = new Extent({
+          xmin: xmin - padLon,
+          ymin: ymin - padLat,
+          xmax: xmax + padLon,
+          ymax: ymax + padLat,
+          spatialReference: { wkid: 4326 }
+        });
+
+        const vp = view.padding || { left:0, right:0, top:0, bottom:0 };
+
+        // ✅ Symmetric top/bottom padding ONLY for the goTo fit.
+        // This centers results in the *visible* map area without moving attribution.
+        const goPad = {
+          left:   vp.left  || 0,
+          right:  vp.right || 0,
+          top:    vp.top   || 0,
+          bottom: vp.top   || 0
+        };
+
+        view.goTo(
+          { target: extent },
+          { animate: true, duration: 450, padding: goPad }
+        ).catch(e => console.warn("zoomToFeatures_ rejected:", e));
+
+      }
+
+      function getSymbol(status, zoom, program, ring) {
+        const st = normStatus(status);
+        const isDown = (st === "down" || st === "svcbu");
+        const isDegraded = (st === "degraded");
+        const isPatching = (st === "patching");
+
+        // color priority: Down > Patching > Degraded > Up
+        const fill = isDown ? "red" : (isPatching ? "#1e63ff" : (isDegraded ? "#ffd400" : "green"));
+
+        // Text color: black on yellow, white otherwise
+        const textFill = isDegraded ? "black" : "white";
+
+        // ✅ Read UI sliders (these were previously not affecting picture-marker SVGs)
+        const iconScale = clamp(parseFloat(window.__uiIconScale ?? 1), 0.5, 3.0);
+        const iconFontScale = clamp(parseFloat(window.__uiIconFontScale ?? 1), 0.5, 3.0);
+
+        // keep your sizing logic
+        const base =
+          isDown      ? 5 :
+          isDegraded  ? 4 :
+                        3;
+
+        const size = base + zoom * 0.6;
+        const px = Math.max(8, Math.round(size * 2));
+
+        const letter = programToLetter(program) || "";
+        const isTwo = (String(letter || "").length >= 2);
+
+        // 2-letter badges: tiny bump
+        let pxAdj = isTwo ? (px + 4) : px;
+
+        // ✅ Apply ICON SIZE scale to the actual SVG resolution
+        pxAdj = Math.max(8, Math.round(pxAdj * iconScale));
+
+        // Base reduction knob (your original)
+        const ICON_FONT_BASE = 0.82;
+
+        // ✅ Apply ICON FONT scale inside SVG text sizing
+        const ICON_FONT_SCALE = ICON_FONT_BASE * iconFontScale;
+
+        const fontSize = isTwo
+          ? Math.max(6, Math.round(pxAdj * 0.44 * ICON_FONT_SCALE))
+          : Math.max(6, Math.round(pxAdj * 0.50 * ICON_FONT_SCALE));
+
+        const half = pxAdj / 2;
+        const r = half - 1;
+
+        // IMPORTANT: no ${} anywhere
+        const safeLetter = letter
+          ? String(letter).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+          : "";
+
+        const progKey = String(program || "").trim().toUpperCase();
+        const textDy =
+          (progKey === "SBN")
+            ? "-0.10em"
+            : "0em";
+
+        const svg =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="' + pxAdj + '" height="' + pxAdj + '" viewBox="0 0 ' + pxAdj + ' ' + pxAdj + '">' +
+            '<circle cx="' + half + '" cy="' + half + '" r="' + r + '" fill="' + fill + '" stroke="black" stroke-width="0.8"/>' +
+            (ring ? '<circle cx="' + half + '" cy="' + half + '" r="' + (r + 1.5) + '" fill="none" stroke="#ffd400" stroke-width="2.6"/>' : '') +
+            '<text x="50%" y="50%" dy="' + textDy + '" text-anchor="middle" dominant-baseline="central"' +
+              ' font-family="Arial, sans-serif" font-weight="700" font-size="' + fontSize + '"' +
+              ' letter-spacing="' + (isTwo ? '-0.2' : '0') + '"' +
+              ' textLength="' + (isTwo ? Math.round(pxAdj * 0.92) : Math.round(pxAdj * 0.55)) + '"' +
+              ' lengthAdjust="spacingAndGlyphs"' +
+              ' fill="' + textFill + '" stroke="black" stroke-width="' + (isTwo ? '0.25' : '0.5') + '" paint-order="stroke">' +
+              safeLetter +
+            '</text>' +
+          '</svg>';
+
+        return {
+          type: "picture-marker",
+          url: "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg),
+          width: pxAdj,
+          height: pxAdj
+        };
+      }
+
+
+
+
+      // Persist center/zoom & redraw symbols on zoom
+      view.watch("center", () => {
+        saveMapCenter(view.center);
+      });
+
+
+      /* =====================================================
+      * Zoom smoothing patch:
+      * - DO NOT call renderPoints() on every zoom tick (it clears the layer)
+      * - Instead, only rescale symbols on existing graphics (throttled)
+      * ===================================================== */
+
+      // throttle state
+      let _zoomSymRaf = 0;
+      let _zoomSymTimer = 0;
+      let _stationaryHandle = null;
+
+      // Small cached symbol getter (uses the local symbolCache declared above)
+      function getSymbolCachedZoom_(status, zoom, program, ring) {
+        const st = normStatus(status);
+        const iconScale = String(window.__uiIconScale ?? 1);
+        const fontScale = String(window.__uiIconFontScale ?? 1);
+
+        const key = st + "|" + zoom + "|" + String(program || "") + "|" + (ring ? 1 : 0) + "|" + iconScale + "|" + fontScale;
+        const hit = symbolCache.get(key);
+        if (hit) return hit;
+
+        // use your global builder (already wired to UI sliders)
+        const sym = window.getSymbol(status, zoom, program, ring);
+        symbolCache.set(key, sym);
+        return sym;
+      }
+
+      // Recompute symbols for existing graphics WITHOUT clearing the layer.
+      // ✅ Batched + stationary + only when integer zoom changes (prevents “blink” on zoom)
+      let __symUpdateToken = 0;
+      let __lastZoomInt = null;
+
+      function updateSymbolsOnlyBatched_() {
+        if (!graphicsLayer || !graphicsLayer.graphics) return;
+
+        // Only update when integer zoom changes (reduces churn drastically)
+        const zInt = Math.round(view.zoom);
+        if (__lastZoomInt === zInt) return;
+        __lastZoomInt = zInt;
+
+        const token = ++__symUpdateToken;
+
+        // Snapshot graphics so the iterator isn’t affected mid-loop
+        const gs = graphicsLayer.graphics.toArray ? graphicsLayer.graphics.toArray() : Array.from(graphicsLayer.graphics);
+        const BATCH = 350;
+        let i = 0;
+
+        const step = () => {
+          if (token !== __symUpdateToken) return; // cancelled by a newer zoom update
+          const end = Math.min(i + BATCH, gs.length);
+
+          for (; i < end; i++) {
+            const g = gs[i];
+            if (!g) continue;
+
+            // IMPORTANT: your renderPoints() sets attributes: { p, _key }
+            const attrs = g.attributes || {};
+            const p = attrs.p || attrs; // fallback for safety
+
+            const stRaw = getStatusValue_(p);
+            const stEff = (p && p.isPatching && normStatus(stRaw) === "svcbu") ? "patching" : stRaw;
+
+            // Same provider ring logic you use elsewhere
+            const ring = !!p.svcbuIsProvider || !!p.backupTo || !!p.svcbuProvidedTo || !!p.backupOf;
+
+            // Mirror ACU/DCP program override so badge letters stay correct
+            const rawType = String(p.type || "").trim();
+            const rawProg = String(p.program || p.PROGRAM || p.programType || "").trim();
+            const kindU   = String(p.kind || p.KIND || "").trim().toUpperCase();
+
+            const typeU = rawType.toUpperCase();
+            const progU = rawProg.toUpperCase();
+
+            const isAcu = (kindU === "ACU" || kindU === "AA" || typeU === "ACU" || typeU === "AA" || progU === "ACU" || progU === "AA");
+            const isDcp = (kindU === "AD"  || kindU === "DCP" || typeU === "DCP" || typeU === "AD"  || progU === "DCP" || progU === "AD");
+
+            const displayProg =
+              isAcu ? "ACU" :
+              isDcp ? "DCP" :
+              (rawProg || String(p.pgma || p.PGMA || p.program || "").trim());
+
+            const sym = getSymbolCachedZoom_(stEff, zoom, program, ring);
+            if (sym) g.symbol = sym;
+          }
+
+          if (i < gs.length) {
+            requestAnimationFrame(step);
+          }
+        };
+
+        requestAnimationFrame(step);
+      }
+
+      // Debounced/throttled zoom handler: update symbols lightly, only when stationary
+      function scheduleSymbolRefresh_() {
+        try {
+          if (_zoomSymRaf) cancelAnimationFrame(_zoomSymRaf);
+          if (_zoomSymTimer) clearTimeout(_zoomSymTimer);
+        } catch (_) {}
+
+        _zoomSymRaf = requestAnimationFrame(() => {
+          _zoomSymTimer = setTimeout(() => {
+            // If the view is still moving, wait until it settles (prevents jank + blinking)
+            try {
+              if (!view.stationary) {
+                if (_stationaryHandle) { _stationaryHandle.remove(); _stationaryHandle = null; }
+                _stationaryHandle = view.watch("stationary", (s) => {
+                  if (s) {
+                    try { updateSymbolsOnlyBatched_(); } catch (_) {}
+                    try { _stationaryHandle?.remove(); } catch (_) {}
+                    _stationaryHandle = null;
+                  }
+                });
+                return;
+              }
+            } catch (_) {}
+
+            // already stationary → update now
+            updateSymbolsOnlyBatched_();
+          }, 120); // slightly wider debounce reduces thrash further
+        });
+      }
+
+      // ✅ zoom watcher: persist zoom + schedule batched symbol refresh
+      view.watch("zoom", () => {
+        saveMapZoom(view.zoom);
+        scheduleSymbolRefresh_();
+      });
+
+
+
+      view.when(() => {
+
+        setLoadStatus("Loading points…");   // ✅ ADD
+        renderProgramLegend();
+
+        // --- Keep behavior aligned with Validation Map ---
+        // Make absolutely sure we are not boxed in by a constraints.geometry
+        try {
+          if (view.constraints) {
+            view.constraints.geometry = null;
+            view.constraints.minZoom = 3;
+            view.constraints.maxZoom = 23;
+            view.constraints.snapToZoom = false;
+            view.constraints.rotationEnabled = false;
+          }
+        } catch (e) {
+          console.warn('Error normalizing view constraints:', e);
+        }
+        // --- end Validation Map alignment ---
+
+        loadSidebarState();
+        setupUI();
+        wireWwaAndRadarToggles({ map, view });
+        syncViewPadding();
+        setTimeout(syncViewPadding, 275); // ✅ re-sync after CSS slide/paint settles
+        window.addEventListener("resize", syncViewPadding, { passive: true });
+
+        // ✅ Pause Timed Rotation when a site popup opens; resume when it closes (robust + auto-resume)
+        try {
+          if (!window._popupPauseInstalled) {
+            window._popupPauseInstalled = true;
+
+            // IMPORTANT: popup.features can remain populated after close in docked mode.
+            // Use popup.viewModel.state as the source of truth.
+            const popupIsOpen = () => {
+              try {
+                const st = String(view?.popup?.viewModel?.state || "").toLowerCase();
+
+                // Treat ONLY these as open
+                if (st === "opening" || st === "open") return true;
+
+                // Treat these as closed (even if features still exists)
+                if (st === "closing" || st === "closed" || st === "hidden") return false;
+
+                // If state is unavailable, fall back to visible (last resort)
+                const vis = !!view?.popup?.visible;
+                return vis;
+              } catch (_) {
+                return false;
+              }
+            };
+
+
+
+            // expose to pause/resume functions for polling
+            window._popupIsOpenNow = popupIsOpen;
+
+            // If popup is already open when we wire up, pause immediately
+            if (popupIsOpen()) pauseTimedRotationForPopup();
+
+            const maybeResume = () => {
+              // small delay lets the popup finish its close animation/state settle
+              setTimeout(() => {
+                if (!popupIsOpen()) resumeTimedRotationForPopup();
+              }, 150);
+            };
+
+            // 1) Watch popup state (most reliable)
+            if (view.popup?.viewModel && typeof view.popup.viewModel.watch === "function") {
+              view.popup.viewModel.watch("state", (state) => {
+                const st = String(state || "").toLowerCase();
+
+                if (st === "opening" || st === "open") {
+                  pauseTimedRotationForPopup();
+                  return;
+                }
+
+                if (st === "closing" || st === "closed" || st === "hidden") {
+                  maybeResume();
+                  return;
+                }
+
+                // unknown state: don’t force anything
+              });
+
+            }
+
+            // 2) Also watch visible (covers some docked cases)
+            view.popup?.watch?.("visible", (vis) => {
+              if (vis) pauseTimedRotationForPopup();
+              else maybeResume();
+            });
+
+            // 3) Safety net: click hitTest pauses when clicking a graphic
+            view.on("click", (evt) => {
+              const rotCb = document.getElementById("timedRotation");
+              if (!rotCb?.checked) return;
+
+              view.hitTest(evt)
+                .then((hit) => {
+                  const results = hit?.results || [];
+                  if (results.length) pauseTimedRotationForPopup();
+                  else maybeResume(); // click on map background closes popup in many configs
+                })
+                .catch(() => {});
+            });
+          }
+        } catch (e) {
+          console.warn("Popup pause/resume hook failed:", e);
+        }
+      });
+
+function wireWwaAndRadarToggles({ map, view }) {
+  // Compatibility sync only:
+  // - Uses the REAL checkbox IDs in Index.html
+  // - Uses layer ids set by the add-ons
+  // - Does NOT fight the add-ons (it just syncs once + on change)
+
+  const wwaCb   = document.getElementById("wwaToggle");
+  const radarCb = document.getElementById("radarToggle");
+
+  const findLayer = (idOrTitle) =>
+    map?.allLayers?.find(l => l.id === idOrTitle || l.title === idOrTitle) || null;
+
+  const getWwaLayer   = () => findLayer("wwaLayer") || findLayer("WWA");
+  const getRadarLayer = () => findLayer("radarReflLayer") || findLayer("Radar Reflectivity");
+
+  function apply() {
+    const wwaLayer = getWwaLayer();
+    const radarLayer = getRadarLayer();
+
+    if (wwaLayer && wwaCb) wwaLayer.visible = !!wwaCb.checked;
+    if (radarLayer && radarCb) radarLayer.visible = !!radarCb.checked;
+  }
+
+  // If layers aren’t present yet, wait a beat and try again
+  function applySoon() {
+    apply();
+    if (!getWwaLayer() || !getRadarLayer()) {
+      setTimeout(apply, 250);
+      setTimeout(apply, 750);
+    }
+  }
+
+  wwaCb?.addEventListener("change", applySoon);
+  radarCb?.addEventListener("change", applySoon);
+
+  // Initial sync
+  view.when(applySoon);
+}
+
+function setupUI() {
+  // Filters (Validation Map style)
+  ["f_pid","f_sid","f_wfo","f_city","f_state","f_any"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", () => applyFilters());
+  });
+
+  document.getElementById("clearSearchBtn")?.addEventListener("click", () => {
+    ["f_pid","f_sid","f_wfo","f_city","f_state","f_any"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    saveFiltersToStorage();
+    applyFilters();
+  });
+
+  document.getElementById("regionCheckboxes")?.addEventListener("change", () => applyFilters());
+  document.getElementById("officeTypeSection")?.addEventListener("change", () => applyFilters());
+
+  // Programs: enforce ASOS parent vs ACU/DCP child exclusivity in the UI
+  // - If ACU/DCP checked -> uncheck ASOS
+  // - If ASOS checked -> uncheck ACU + DCP
+  const programsSection = document.getElementById("programsSection");
+  if (programsSection && programsSection.dataset.asosExclWired !== "1") {
+    programsSection.dataset.asosExclWired = "1";
+
+    programsSection.addEventListener("change", (e) => {
+      const cb = e.target;
+      if (!cb || !cb.classList || !cb.classList.contains("programCheckbox")) {
+        applyFilters();
+        return;
+      }
+
+      const v = normalizeProgramForFilter(cb.value);
+
+      // ASOS family filters are intentionally independent:
+      // ASOS = base non-DoW stations only
+      // ACU / DCP / DoW = additive overlays/subsets that may be combined with ASOS or each other
+
+      // ---- BUOYS: match RADAR behavior (parent + child may coexist) ----
+      // BUOYS parent should stay checked even when a child is selected.
+      // Child selections refine the family, they do not toggle the parent off.
+      // Likewise, checking BUOYS should not clear BUOY/DART/TAO/OTHER.
+
+      saveFiltersToStorage();
+      applyFilters();
+    });
+  } else {
+    programsSection?.addEventListener("change", () => applyFilters());
+  }
+
+  const downOnlyEl = document.getElementById("showDownOnly");
+  const hideOutEl  = document.getElementById("hideDownDegraded");
+  const wwaOnlyEl  = document.getElementById("showWWAOnly");
+
+  downOnlyEl?.addEventListener("change", () => {
+    // Mutual exclusivity
+    if (downOnlyEl.checked && hideOutEl) hideOutEl.checked = false;
+
+    saveFiltersToStorage();
+    applyFilters();
+  });
+
+  hideOutEl?.addEventListener("change", () => {
+    // Mutual exclusivity
+    if (hideOutEl.checked && downOnlyEl) downOnlyEl.checked = false;
+
+    saveFiltersToStorage();
+    applyFilters();
+  });
+
+  wwaOnlyEl?.addEventListener("change", () => {
+    saveFiltersToStorage();
+    applyFilters();
+  });
+  // Auto Expand (only affects the Down Sites program groups during rotation)
+  document.getElementById("downAutoExpand")?.addEventListener("change", () => {
+    saveFiltersToStorage();
+
+    const rotCb = document.getElementById("timedRotation");
+    const rotOn = !!rotCb?.checked;
+    if (!rotOn) return;
+
+    const parent = String(window._rotationParentProgram || "").trim().toUpperCase();
+
+    if (document.getElementById("downAutoExpand")?.checked) {
+      _downAutoExpandBegin_();
+      _downAutoExpandToParent_(parent);
+    } else {
+      _downAutoExpandEnd_();
+    }
+  });
+
+  // Zoom toggle
+  document.getElementById("zoomOnFilter")?.addEventListener("change", () => {
+    saveFiltersToStorage();
+  });
+
+    // Buoys: NWS vs Other
+  document.getElementById("buoyAgencyNws")?.addEventListener("change", () => {
+    saveFiltersToStorage();
+    applyFilters();
+  });
+  document.getElementById("buoyAgencyOther")?.addEventListener("change", () => {
+    saveFiltersToStorage();
+    applyFilters();
+  });
+
+
+  // Timed Rotation checkbox wiring (install BEFORE reset wiring so it always works)
+  try { installTimedRotationUI(); } catch(e){ console.warn("installTimedRotationUI failed:", e); }
+
+  // Reset filters (safe wiring)
+  const resetBtn =
+    document.getElementById("resetButton") ||
+    document.getElementById("resetFiltersBtn") ||
+    document.getElementById("resetFilters") ||
+    null;
+
+  resetBtn?.addEventListener("click", () => {
+    // Stop timed rotation if it was running
+    const rot = document.getElementById("timedRotation");
+    if (rot) rot.checked = false;
+    try { stopTimedRotation(); } catch(_) {}
+    window._rotationParentProgram = "";
+    clearRotationLastParent_();
+
+    try { localStorage.removeItem("filters"); } catch(_) {}
+
+    // Clear search fields
+    ["f_pid","f_sid","f_wfo","f_city","f_state","f_any"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+
+    const pause = document.getElementById("rotationPauseSeconds");
+    if (pause) pause.value = 5;
+
+    // Uncheck everything
+    document.querySelectorAll(".regionCheckbox, .officeTypeCheckbox, .programCheckbox")
+      .forEach(cb => cb.checked = false);
+
+    const downOnly = document.getElementById("showDownOnly");
+    if (downOnly) downOnly.checked = false;
+
+    const hideOut = document.getElementById("hideDownDegraded");
+    if (hideOut) hideOut.checked = false;
+
+
+    // Default zoom behavior OFF
+    const zoomCb = document.getElementById("zoomOnFilter");
+    if (zoomCb) zoomCb.checked = false;
+
+    // ✅ Default BUOYS agency filters ON
+    const bNws = document.getElementById("buoyAgencyNws");
+    const bOther = document.getElementById("buoyAgencyOther");
+    if (bNws) bNws.checked = true;
+    if (bOther) bOther.checked = true;
+
+
+    // Default view: ASOS base stations only (no DoW / no DCP / no ACU selected)
+    const defaultAsos = document.querySelector('.programCheckbox[value="ASOS"]');
+    if (defaultAsos) defaultAsos.checked = true;
+
+    // Persist + reapply
+    try { saveFiltersToStorage(); } catch(_) {}
+    try { applyFilters(); } catch(_) {}
+  });
+
+  // Map controls
+  document.getElementById("viewResetButton")?.addEventListener("click", () => {
+    // Use the same defaults as our MapView config
+    view.goTo({ center: [-100, 38], zoom: 4 });
+    map.basemap = "osm";
+
+    const bs = document.getElementById("basemapSelect");
+    if (bs) bs.value = "osm";
+
+    saveBasemap("osm");
+  });
+
+  document.getElementById("basemapSelect")?.addEventListener("change", e => {
+    const bm = e.target.value || "osm";
+    map.basemap = bm;
+    saveBasemap(bm);
+  });
+
+  // Sidebars collapse (keep ArcGIS popup/UI padding in-sync with the final sidebar position)
+  const syncPaddingAfterSidebarMove = () => {
+    syncViewPadding();
+    setTimeout(syncViewPadding, 275);
+  };
+
+  // Sync exactly when transition ends (most reliable)
+  const _installSidebarPaddingSyncOnce_ = () => {
+    const leftSb  = document.getElementById("sidebar");
+    const rightSb = document.getElementById("rightSidebar");
+
+    [leftSb, rightSb].forEach(el => {
+      if (!el || el.dataset.padSync === "1") return;
+      el.dataset.padSync = "1";
+
+      el.addEventListener("transitionend", (e) => {
+        if (e.propertyName === "transform") syncViewPadding();
+      });
+    });
+  };
+  _installSidebarPaddingSyncOnce_();
+
+  document.getElementById("toggleSidebarBtn")?.addEventListener("click", () => {
+    const c = document.getElementById("mainContainer");
+    const collapsed = c.classList.toggle("sidebar-collapsed");
+
+    document.getElementById("toggleSidebarBtn").textContent = collapsed ? "►" : "◄";
+    localStorage.setItem("sidebarCollapsed", String(collapsed));
+
+    syncPaddingAfterSidebarMove();
+  });
+
+  document.getElementById("toggleRightSidebarBtn")?.addEventListener("click", () => {
+    const c = document.getElementById("mainContainer");
+    const collapsed = c.classList.toggle("right-sidebar-collapsed");
+
+    document.getElementById("toggleRightSidebarBtn").textContent = collapsed ? "◄" : "►";
+    localStorage.setItem("rightSidebarCollapsed", String(collapsed));
+
+    syncPaddingAfterSidebarMove();
+  });
+}
+
+      /* ===== Rendering ===== */
+      window.updateMapAndTables = function(newFeatures){
+      dbg("updateMapAndTables(): features =", (newFeatures||[]).length);
+
+      features = Array.isArray(newFeatures) ? newFeatures : [];
+
+      // ✅ Ensure Down table builders have something even before a render finishes
+      window._currentFilteredFeatures = features;
+
+      loadFiltersFromStorage();
+      applyFilters();
+      ensureTimedRotationStartup_();
+    };
+
+    // ✅ If data arrived before the map finished initializing, render it now
+    if (Array.isArray(window._pendingFeaturesForRender) && window._pendingFeaturesForRender.length) {
+      const pf = window._pendingFeaturesForRender;
+      window._pendingFeaturesForRender = null;
+
+      try {
+        window.updateMapAndTables(pf);
+      } catch (e) {
+        console.error("Deferred render failed:", e);
+      }
+    }
+
+      function getSymbol(status, zoom, program, ring) {
+        const st = normStatus(status);
+        const isDown = (st === "down" || st === "svcbu");
+        const isDegraded = (st === "degraded");
+        const isPatching = (st === "patching");
+
+        // color priority: Down > Patching > Degraded > Up
+        const fill = isDown ? "red" : (isPatching ? "#1e63ff" : (isDegraded ? "#ffd400" : "green"));
+
+        // Text color: black on yellow, white otherwise
+        const textFill = isDegraded ? "black" : "white";
+
+
+        // keep your sizing logic
+        // Down = largest, Degraded = slightly larger, others = normal
+        const base =
+          isDown      ? 5 :
+          isDegraded  ? 4 :
+                        3;
+
+        const size = base + zoom * 0.6;
+        const px = Math.max(8, Math.round(size * 2));
+
+        const letter = programToLetter(program) || "";
+        const isTwo = (String(letter || "").length >= 2);
+
+        // Give 2-letter badges a tiny size bump so "Aa/Ad" doesn't collapse visually
+        const pxAdj = isTwo ? (px + 4) : px;
+
+        // ↓ Reduce point-icon font size with a single scale knob
+        const ICON_FONT_SCALE = 0.82; // 1.0 = current size, lower = smaller (try 0.75–0.90)
+
+        const fontSize = isTwo
+          ? Math.max(6, Math.round(pxAdj * 0.44 * ICON_FONT_SCALE))
+          : Math.max(6, Math.round(pxAdj * 0.50 * ICON_FONT_SCALE));
+
+
+        const half = pxAdj / 2;
+        const r = half - 1;
+
+        // IMPORTANT: no ${} anywhere
+        const safeLetter = letter
+        ? String(letter).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+        : "";
+
+      const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="' + pxAdj + '" height="' + pxAdj + '" viewBox="0 0 ' + pxAdj + ' ' + pxAdj + '">' +
+
+          '<circle cx="' + half + '" cy="' + half + '" r="' + r + '" fill="' + fill + '" stroke="black" stroke-width="0.8"/>' +
+          (ring ? '<circle cx="' + half + '" cy="' + half + '" r="' + (r + 1.5) + '" fill="none" stroke="#ffd400" stroke-width="2.6"/>' : '') +
+          '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"' +
+            ' font-family="Arial, sans-serif" font-weight="700" font-size="' + fontSize + '"' +
+            ' letter-spacing="' + (isTwo ? '-0.2' : '0') + '"' +
+            ' textLength="' + (isTwo ? Math.round(pxAdj * 0.92) : Math.round(pxAdj * 0.55)) + '"' +
+            ' lengthAdjust="spacingAndGlyphs"' +
+            ' fill="' + textFill + '" stroke="black" stroke-width="' + (isTwo ? '0.25' : '0.5') + '" paint-order="stroke">' +
+            safeLetter +
+          '</text>' +
+
+        '</svg>';
+
+        return {
+          type: "picture-marker",
+          url: "data:image/svg+xml;charset=UTF-8," + encodeURIComponent(svg),
+          width: pxAdj,
+          height: pxAdj
+        };
+      }
+
+function buildPopupHtml(p){
+  const st = String(p.status || '').toLowerCase();
+  const isDown = (st === 'down');
+  const isDegraded = (st === 'degraded');
+  const isPatching = (st === 'patching');
+
+  const boldStatus = (v) => {
+    const s = (v == null ? '' : String(v)).trim();
+    if (!s) return '—';
+    if (/down/i.test(s) || /degraded/i.test(s)) return `<strong>${s}</strong>`;
+    return s;
+  };
+
+  const outageProg = p.outageProgram || '';
+  const prog = (p.type || '—').replace(/\s*\(PD\)\s*/i, '');
+  const stnName =
+    (p.STN_NAME ?? p.searchableName ?? p.stn_name ?? p.stnName ?? p.name ?? "")
+      .toString()
+      .trim();
+
+  const popupDivider = `<hr style="margin:6px 0;border:none;border-top:1px solid #bdbdbd;">`;
+  const popupGap = `<div style="height:6px;"></div>`;
+
+  let html = `
+    <div style="font-size:13px; line-height:1.35;">
+      <div><b>Name:</b> ${stnName || '—'}</div>
+      <div><b>Program:</b> ${prog}</div>
+      ${(() => {
+        // BUOY (PD) extra details: Type (Col AD) + Last Report (Col AW)
+        const pgma = String(p.pgma || p.PGMA || "").trim().toUpperCase().replace(/\s+/g, " ");
+        const pgmaCompact = pgma.replace(/\s+/g, "");
+
+        const isAsosPd = (pgma === "ASOS (PD)" || pgmaCompact === "ASOS(PD)");
+        const isNwrPd  = (pgma === "NWR (PD)"  || pgmaCompact === "NWR(PD)");
+        const isRadarPd = (pgma === "RADAR (PD)" || pgmaCompact === "RADAR(PD)");
+        const isBuoyPd  = (pgma === "BUOY (PD)"  || pgmaCompact === "BUOY(PD)");
+
+        // UA detection (covers UA, UPPER AIR, and UA (PD) if you ever label it that way)
+        const progClean = String((p.type || "—")).replace(/\s*\(PD\)\s*/i, "").trim().toUpperCase();
+        const isUa =
+          (pgma === "UA" || pgma === "UPPER AIR" || pgma === "UA (PD)" || pgmaCompact === "UA(PD)") ||
+          (progClean === "UA" || progClean === "UPPER AIR");
+
+        const divider = `<hr style="margin:6px 0;border:none;border-top:1px solid #d6d6d6;">`;
+
+        // ✅ For ASOS, use popupStatus (PIDS AP). Otherwise use p.status.
+        const statusDisplay = isAsosPd ? (p.popupStatus || p.status) : p.status;
+
+        const outageDetails =
+          (isDown || isDegraded || isPatching)
+            ? `
+                ${p.outageStart ? `<div><b>Start:</b> ${escapeHtml_(formatPopupUtcFromAny_(p.outageStart))}</div>` : ``}
+                ${p.outageSource ? `<div><b>Source:</b> ${p.outageSource}</div>` : ``}
+                <div><b>Cause:</b> ${p.outageCause || '—'}</div>
+              `
+            : ``;
+
+        let out = `<hr style="margin:6px 0;border:none;border-top:1px solid #bdbdbd;"><div><b>Status:</b> ${boldStatus(statusDisplay)}</div>${outageDetails}`;
+
+        // --- RADAR site link ---
+        // For NEXRAD sites, add a divider and link:
+        // - Up sites: below Status
+        // - Down/Degraded/Patching sites: below Cause
+        if (isRadarPd) {
+          const radarIdRaw = String(
+            p.pidAdj || p.pid || p.PID || p.siteId || p.sid || p.SID || ""
+          ).trim();
+
+          if (radarIdRaw) {
+            const radarIdLabel = radarIdRaw.toUpperCase();
+            const radarUrl =
+              "https://radar.weather.gov/station/" +
+              encodeURIComponent(radarIdRaw.toLowerCase()) +
+              "/standard";
+
+            out += divider +
+              '<div><b>RADAR Link:</b> <a href="' +
+              radarUrl +
+              '" target="_blank" rel="noopener">' +
+              escapeHtml_(radarIdLabel) +
+              '</a></div>';
+          }
+        }
+
+        const linkHtml = (label, url) => {
+          const lbl = String(label || "").trim();
+          const u   = String(url   || "").trim();
+
+          if (u) {
+            return `<a href="${escapeHtml_(u)}" target="_blank" rel="noopener">${escapeHtml_(lbl || "Open")}</a>`;
+          }
+
+          return escapeHtml_(lbl);
+        };
+
+        const addSection = (rows) => {
+          const items = rows.filter(Boolean);
+          if (!items.length) return "";
+          return `${divider}${items.join("")}`;
+        };
+
+        // --- ASOS extra fields (UPDATED) ---
+        if (isAsosPd) {
+          const lastOb = String(p.lastOb || "").trim();          // PIDS AX
+          const ts     = String(p.timeSinceLastOb || "").trim(); // PIDS AY
+
+          // BA/BB rich-text link fields from server
+          const eText = String(p.lastObEText || "").trim();
+          const eUrl  = String(p.lastObEUrl  || "").trim();
+          const dText = String(p.lastObDText || "").trim();
+          const dUrl  = String(p.lastObDUrl  || "").trim();
+
+          const hasAsosDetails = !!(lastOb || ts || eText || eUrl || dText || dUrl);
+
+          // ALWAYS insert a divider before the ASOS observation block
+          // This ensures Status -> divider -> Last OB
+          if (hasAsosDetails) {
+            out += divider;
+          }
+
+          if (lastOb) out += `<div><b>Last OB:</b> ${escapeHtml_(formatPopupUtcFromAny_(lastOb))}</div>`;
+          if (ts)     out += `<div><b>Time Since Last Ob:</b> ${escapeHtml_(ts)}</div>`;
+
+          if (eText || eUrl || dText || dUrl) out += `<div style="height:6px;"></div>`;
+
+          if (eText || eUrl) out += `<div><b>Last Ob E:</b> ${linkHtml(eText, eUrl)}</div>`;
+          if (dText || dUrl) out += `<div><b>Last Ob D:</b> ${linkHtml(dText, dUrl)}</div>`;
+
+          return out;
+        }
+
+        // --- NWR extra fields (NEW) ---
+        if (isNwrPd) {
+          const lastForecast = String(p.nwrLastForecast || "").trim();                   // BK
+          const timeSinceLastForecast = String(p.nwrTimeSinceLastForecast || "").trim(); // BL
+          const forecastLinkText = String(p.nwrForecastLinkText || "").trim();           // BS label
+          const forecastLinkUrl  = String(p.nwrForecastLinkUrl  || "").trim();           // BS url
+
+          const lastOb = String(p.nwrLastOb || "").trim();                               // BN
+          const timeSinceLastOb = String(p.nwrTimeSinceLastOb || "").trim();             // BO
+          const obLinkText = String(p.nwrObLinkText || "").trim();                       // BW label
+          const obLinkUrl  = String(p.nwrObLinkUrl  || "").trim();                       // BW url
+
+          const lastAlert = String(p.nwrLastAlert || "").trim();                         // BQ
+          const alertLinkText = String(p.nwrAlertLinkText || "").trim();                 // BU label
+          const alertLinkUrl  = String(p.nwrAlertLinkUrl  || "").trim();                 // BU url
+
+          out += addSection([
+            lastForecast ? `<div><b>Last Forecast:</b> ${escapeHtml_(lastForecast)}</div>` : "",
+            timeSinceLastForecast ? `<div><b>Time Since Last Forecast:</b> ${escapeHtml_(timeSinceLastForecast)}</div>` : "",
+            (forecastLinkText || forecastLinkUrl) ? `<div><b>Forecast Link:</b> ${linkHtml(forecastLinkText, forecastLinkUrl)}</div>` : ""
+          ]);
+
+          out += addSection([
+            lastOb ? `<div><b>Last Ob:</b> ${escapeHtml_(lastOb)}</div>` : "",
+            timeSinceLastOb ? `<div><b>Time Since Last Ob:</b> ${escapeHtml_(timeSinceLastOb)}</div>` : "",
+            (obLinkText || obLinkUrl) ? `<div><b>Ob Link:</b> ${linkHtml(obLinkText, obLinkUrl)}</div>` : ""
+          ]);
+
+          out += addSection([
+            lastAlert ? `<div><b>Last Alert:</b> ${escapeHtml_(lastAlert)}</div>` : "",
+            (alertLinkText || alertLinkUrl) ? `<div><b>Alert Link:</b> ${linkHtml(alertLinkText, alertLinkUrl)}</div>` : ""
+          ]);
+
+          return out;
+        }
+
+        // --- UA extra fields (NEW) ---
+        if (isUa) {
+          // Prefer UA-specific keys if you used them server-side; fall back safely.
+          const tsr = String(
+            p.timeSinceLastReport ??
+            p.timeSinceLastRpt ??
+            p.uaTimeSinceLastReport ??
+            p.uaTimeSinceLastRpt ??
+            p.pidsAY ?? p.PIDS_AY ?? ""
+          ).trim(); // PIDS AY
+
+          const lr = String(
+            p.lastReportUa ??
+            p.lastReportUA ??
+            p.lastReport ??
+            p.uaLastReport ??
+            p.pidsAW ?? p.PIDS_AW ?? ""
+          ).trim(); // PIDS AW
+
+          const uaSoundingsText = String(
+            p.uaSoundingsText ??
+            p.uaLinkText ??
+            p.pidsAZ ?? p.PIDS_AZ ?? ""
+          ).trim();
+
+          const uaSoundingsUrl = String(
+            p.uaSoundingsUrl ??
+            p.uaLinkUrl ??
+            ""
+          ).trim();
+
+          if (tsr) out += `<div><b>Time Since Last Report:</b> ${escapeHtml_(tsr)}</div>`;
+          if (lr)  out += `<div><b>Last Report:</b> ${escapeHtml_(lr)}</div>`;
+
+          if (uaSoundingsText || uaSoundingsUrl) {
+            out += addSection([
+              `<div><b>UA Soundings:</b> ${linkHtml(uaSoundingsText, uaSoundingsUrl)}</div>`
+            ]);
+          }
+        }
+
+        // --- BUOY details link + BuoyCam ---
+        if (isBuoyPd) {
+          const buoyIdRaw = String(
+            p.pidAdj || p.pid || p.PID || p.siteId || p.sid || p.SID || ""
+          ).trim();
+
+          const hasBuoyCam =
+            (p.hasBuoyCam === true) ||
+            (String(p.hasBuoyCam ?? "").trim().toLowerCase() === "true");
+
+          const buoyCamText = hasBuoyCam ? "Yes" : "No";
+
+          if (buoyIdRaw) {
+            const buoyIdLabel = buoyIdRaw.toUpperCase();
+            const buoyUrl =
+              "https://www.ndbc.noaa.gov/station_page.php?station=" +
+              encodeURIComponent(buoyIdRaw);
+
+            out += divider +
+              '<div><a href="' +
+              buoyUrl +
+              '" target="_blank" rel="noopener">Buoy details: ' +
+              escapeHtml_(buoyIdLabel) +
+              '</a></div>' +
+              '<div><b>Has BuoyCam:</b> ' + buoyCamText + '</div>';
+          } else {
+            out += divider +
+              '<div><b>Has BuoyCam:</b> ' + buoyCamText + '</div>';
+          }
+        }
+
+        return out;
+      })()}
+
+
+
+      ${(() => {
+        // PIDS AV (backup target) can come through as any of these depending on your server mapping
+        const target = String(
+          p.backupTo || p.svcbuProvidedTo || p.backupOf || p.backup_target || ""
+        ).trim();
+
+        if (!target) return "";
+
+        // This is the “comment” line you asked for
+        return `<div><b>Comment:</b> Providing Backup to ${target}</div>`;
+      })()}
+
+      ${p.svcbuProvidedBy ? `<div><b>SVCBU Provided By:</b> ${p.svcbuProvidedBy}</div>` : ``}
+      ${p.svcbuProvidedTo ? `<div><b>SVCBU Provided To:</b> ${p.svcbuProvidedTo}</div>` : ``}
+
+            ${(() => {
+        // ===============================
+        // ✅ AWIPS(PD) patching block
+        // Show for AWIPS sites even if NOT currently patching
+        // Elapsed is calculated live in UTC when popup opens.
+        // ===============================
+        const pgma = String(p.pgma || p.PGMA || "").trim().toUpperCase().replace(/\s+/g, " ");
+        const isAwipsPd = (pgma === "AWIPS (PD)" || pgma.replace(/\s+/g, "") === "AWIPS(PD)");
+        if (!isAwipsPd) return "";
+
+        const safeUtc = (v) => {
+          const s = String(v ?? "").trim();
+          return s ? escapeHtml_(formatPopupUtcFromAny_(s)) : "—";
+        };
+
+        const parseUtcMs = (v) => {
+          const s = String(v ?? "").trim();
+          if (!s) return null;
+
+          // Already formatted like: Mon Mar 16 2026 19:52:00 UTC
+          let m = s.match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+UTC$/i);
+          if (m) {
+            const MONTH_INDEX = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+            const mon = m[2].slice(0,1).toUpperCase() + m[2].slice(1,3).toLowerCase();
+            return Date.UTC(
+              Number(m[4]),
+              MONTH_INDEX[mon],
+              Number(m[3]),
+              Number(m[5]),
+              Number(m[6]),
+              Number(m[7])
+            );
+          }
+
+          // ISO-ish / sheet style: 2026-03-13 23:00:00 or 2026-03-13T23:00:00Z
+          m = s.match(/^(\d{4})[-\/ ](\d{1,2})[-\/ ](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*(UTC|Z)?$/i);
+          if (m) {
+            return Date.UTC(
+              Number(m[1]),
+              Number(m[2]) - 1,
+              Number(m[3]),
+              Number(m[4] || 0),
+              Number(m[5] || 0),
+              Number(m[6] || 0)
+            );
+          }
+
+          const t = Date.parse(s);
+          return Number.isFinite(t) ? t : null;
+        };
+
+        const calcElapsed = (startVal, endVal) => {
+          const startMs = parseUtcMs(startVal);
+          if (startMs == null) return "—";
+
+          const endMs = parseUtcMs(endVal);
+          const stopMs = (endMs != null) ? endMs : Date.now();
+
+          let diff = Math.max(0, stopMs - startMs);
+
+          const totalSeconds = Math.floor(diff / 1000);
+          const days = Math.floor(totalSeconds / 86400);
+          const hours = Math.floor((totalSeconds % 86400) / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+          const seconds = totalSeconds % 60;
+
+          const pad2 = (n) => String(n).padStart(2, "0");
+
+          if (days > 0) return `${days}d ${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
+          return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
+        };
+
+        return `
+          <div style="margin:6px 0;">---------------</div>
+          <div style="font-weight:800; margin-bottom:2px;">Patching</div>
+
+          <div style="height:6px;"></div>
+
+          <div style="margin-top:4px; font-weight:800;">Security</div>
+          <div><b>Start:</b> ${safeUtc(p.awipsSecurityStart)}</div>
+          <div><b>End:</b> ${safeUtc(p.awipsSecurityEnd)}</div>
+          <div><b>Elapsed:</b> ${escapeHtml_(calcElapsed(p.awipsSecurityStart, p.awipsSecurityEnd))}</div>
+
+          <div style="height:6px;"></div>
+
+          <div style="margin-top:4px; font-weight:800;">OpenShift</div>
+          <div><b>Start:</b> ${safeUtc(p.awipsOpenshiftStart)}</div>
+          <div><b>End:</b> ${safeUtc(p.awipsOpenshiftEnd)}</div>
+          <div><b>Elapsed:</b> ${escapeHtml_(calcElapsed(p.awipsOpenshiftStart, p.awipsOpenshiftEnd))}</div>
+        `;
+      })()}
+  `;
+
+
+  html += `</div>`;
+  return html;
+}
+
+// --- Popup header ID resolver ---
+function getPopupHeaderId_(p, displayProgram) {
+  const clean = (v) => String(v ?? "").trim();
+  const up = (v) => clean(v).toUpperCase();
+
+  // Program label (strip "(PD)" just in case)
+  const prgm = up(displayProgram).replace(/\s*\(PD\)\s*/g, "").trim();
+
+  // Prefer PID, fallback to SID
+  let id = up(p?.pidAdj || p?.pid || p?.PID || p?.siteId || "");
+  if (!id) id = up(p?.sid || p?.SID || "");
+
+  // Safety: if both missing, at least show something
+  if (!id && prgm) return prgm;
+  if (!id && !prgm) return "Site";
+
+  // TDWR SPG sanity (optional, keeps your prior intent)
+  // If program is TDWR SPG and id looks like K###, force T###
+  if (prgm === "TDWR SPG" && /^K[A-Z0-9]{3}$/.test(id)) {
+    id = "T" + id.slice(1);
+  }
+
+  return prgm ? `${prgm} - ${id}` : id;
+}
+
+function renderPoints(points){
+  const myToken = ++renderToken; // cancel stale renders
+
+  currentFilteredFeatures = Array.isArray(points) ? points : [];
+  window._currentFilteredFeatures = currentFilteredFeatures;
+
+  const z = view.zoom;
+
+  // ---- Layer swap (transparent refresh) ----
+  // Render into a new layer, then swap it in so users never see a blank map.
+  const oldLayer = window._pointsLayer || graphicsLayer;
+
+  // ✅ IMPORTANT: cleanup any orphan temp layers from prior canceled renders
+  try {
+    window._tmpPointsLayers = window._tmpPointsLayers || new Set();
+    for (const lyr of Array.from(window._tmpPointsLayers)) {
+      if (lyr && lyr !== window._pointsLayer) {
+        try { map.remove(lyr); } catch(_) {}
+      }
+    }
+  } catch(_) {}
+
+  // Create a uniquely-identified temp layer for THIS render
+  const newLayer = new GraphicsLayer({ id: "pointsLayer_tmp_" + String(myToken) });
+  map.add(newLayer);
+
+  // Track temp layers so we can remove them if canceled
+  try { window._tmpPointsLayers.add(newLayer); } catch(_) {}
+
+
+  // Build a fresh index for the new layer
+  const newIndex = new NativeMap();
+
+  const rank = (st) => {
+    const s = String(st || "").toLowerCase().trim();
+    if (s === "down" || s === "svcbu") return 4;
+    if (s === "degraded") return 3;
+    if (s === "patching") return 2;
+    return 1; // Up/unknown
+  };
+
+  // Split into outages first so they appear immediately
+  const outages = [];
+  const others = [];
+
+  for (const f of currentFilteredFeatures) {
+    const p = f?.properties || {};
+    const st = getStatusValue_(p);
+    const r = rank(st);
+    if (r >= 2) outages.push(f); else others.push(f);
+  }
+  const ptsOutageFirst = outages.concat(others);
+
+  setLoadStatus("Rendering points (" + String(ptsOutageFirst.length) + ")…");
+
+  const bringOutagesToFront = (outageGraphics) => {
+    try {
+      for (const g of outageGraphics) {
+        newLayer.reorder(g, newLayer.graphics.length - 1);
+      }
+    } catch(_) {}
+  };
+
+  const buildGraphic = (f) => {
+    const coords = f?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return null;
+
+    const lon = Number(coords[0]);
+    const lat = Number(coords[1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+
+    const p = f?.properties || {};
+
+    // Key used for index lookups; allow collisions (station vs overlays) safely by also including kind if present
+    const baseKey = String(
+      p.pidAdj || p.pid || p.PID || p.siteId || p.sidAdj || p.sid || p.SID || ""
+    ).trim().toUpperCase();
+    if (!baseKey) return null;
+
+    const kindU = String(p.kind || p.KIND || "").trim().toUpperCase();
+    const key = kindU ? (baseKey + "|" + kindU) : baseKey;
+
+    // Yellow ring if providing backup (PIDS AV not null)
+    const ring = !!p.svcbuIsProvider || !!p.backupTo || !!p.svcbuProvidedTo || !!p.backupOf;
+
+    // Program used for both badge AND popup header:
+    const rawType = String(p.type || "").trim();
+    const rawProg = String(p.program || p.PROGRAM || p.programType || "").trim();
+
+    const typeU = rawType.toUpperCase();
+    const progU = rawProg.toUpperCase();
+
+    const isAcu = (kindU === "ACU" || kindU === "AA" || typeU === "ACU" || typeU === "AA" || progU === "ACU" || progU === "AA");
+    const isDcp = (kindU === "AD"  || kindU.startsWith("DCP") || typeU === "DCP" || typeU === "AD" || typeU.startsWith("DCP") || progU === "DCP" || progU === "AD" || progU.startsWith("DCP"));
+
+    // BUOY(PD) and RADAR(PD) icon-letter handling
+    const pgmaU = String(p.pgma || p.PGMA || "").trim().toUpperCase().replace(/\s+/g, " ");
+    const pgmaCompact = pgmaU.replace(/\s+/g, "");
+    const isBuoyPd = (pgmaU === "BUOY (PD)" || pgmaCompact === "BUOY(PD)");
+    const isRadarPd = (pgmaU === "RADAR (PD)" || pgmaCompact === "RADAR(PD)");
+
+    const buoySubtype = normalizeProgramForFilter(String(p.subtype || "").trim());
+    const radarSubtype = normalizeProgramForFilter(String(p.subtype || "").trim());
+
+    const buoyUseChildLabels = buoyChildSelectionActive_();
+    const radarUseChildLabels = radarChildSelectionActive_();
+
+    const programForLetter =
+      isAcu ? "ACU" :
+      isDcp ? "DCP" :
+      (isBuoyPd
+        ? (buoyUseChildLabels ? (buoySubtype || "BUOY") : "BUOY")
+        : (isRadarPd
+            ? (radarUseChildLabels ? (radarSubtype || "RADAR") : "RADAR")
+            : (p.pgma || p.PGMA || rawProg || rawType || "")));
+
+    const stRaw = getStatusValue_(p);
+    const stEff = (p && p.isPatching && normStatus(stRaw) === "svcbu") ? "patching" : stRaw;
+    const sym = window.getSymbolCached(stEff, z, programForLetter, ring);
+
+
+
+    const displayProgram =
+      isAcu ? "ACU" :
+      isDcp ? "DCP" :
+      normalizeProgramForFilter(programForLetter || rawType || rawProg || "");
+    const headerId = getPopupHeaderId_(p, displayProgram);
+
+    const popupTemplate = {
+      title: headerId || "Site",
+      content: buildPopupHtml(p)
+    };
+
+    return new Graphic({
+      geometry: { type: "point", longitude: lon, latitude: lat },
+      symbol: sym,
+      attributes: { p, _key: key },
+      popupTemplate
+    });
+  };
+
+  // Render in batches so the UI paints and outages show immediately
+  const BATCH = 400;
+  let i = 0;
+  let added = 0, skipped = 0;
+  const outageGraphics = [];
+
+  const step = () => {
+    if (myToken !== renderToken) {
+      // ✅ cancelled mid-render: remove the temp layer so points don't accumulate
+      try { map.remove(newLayer); } catch(_) {}
+      try { window._tmpPointsLayers?.delete?.(newLayer); } catch(_) {}
+      return;
+    }
+
+
+    const end = Math.min(i + BATCH, ptsOutageFirst.length);
+
+    for (; i < end; i++) {
+      const f = ptsOutageFirst[i];
+      const g = buildGraphic(f);
+      if (!g) { skipped++; continue; }
+
+      newLayer.add(g);
+
+      const k = String(g.attributes?._key || "").trim().toUpperCase();
+      if (k) {
+        try { newIndex.set(k, g); } catch(_) {}
+      }
+
+      const st = normStatus(getStatusValue_(g.attributes));
+      if (st === "down" || st === "svcbu" || st === "patching" || st === "degraded") {
+        outageGraphics.push(g);
+      }
+
+      added++;
+    }
+
+    setLoadStatus("Rendering points (" + String(added) + "/" + String(ptsOutageFirst.length) + ")…");
+
+    bringOutagesToFront(outageGraphics);
+
+    if (i < ptsOutageFirst.length) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    dbg("renderPoints: added=" + String(added) + " skipped=" + String(skipped));
+
+    // Swap layers atomically
+    // ✅ Remove any other temp layers that might have survived from older canceled renders
+    try {
+      if (window._tmpPointsLayers) {
+        for (const lyr of Array.from(window._tmpPointsLayers)) {
+          if (lyr && lyr !== newLayer) { try { map.remove(lyr); } catch(_) {} }
+        }
+      }
+      window._tmpPointsLayers = new Set([newLayer]);
+    } catch(_) {}
+
+    try { map.remove(oldLayer); } catch(_) {}
+    window._pointsLayer = newLayer;
+
+
+    // Replace the global index used elsewhere
+    window._graphicIndex = newIndex;
+
+    // Update breakdowns + tables after points exist
+    try { updateTypeBreakdown(); } catch(e) {}
+    try { updateDownCounter(); } catch(e) {}
+    try { renderDownTable([]); } catch(e) {}
+
+    // Mark base points rendered and run any deferred installs (overlays + ASOS overlays)
+    window.__basePointsRendered = true;
+
+    // Install any overlays that were persisted ON but deferred during initial load.
+    // These now run sequentially in priority order:
+    // RADAR -> WWA -> RFC -> WFO -> CWSU -> MCC -> REGION -> TIMEZONES
+    try {
+      drainOverlayInstallQueue_();
+    } catch(_) {}
+
+    // Apply ASOS overlays if they arrived while base was rendering
+    try {
+      if (window._pendingAsosOverlays && !window.__asosApplied) applyPendingAsosOverlays_();
+    } catch(_) {}
+
+    clearLoadStatus();
+  };
+
+  requestAnimationFrame(step);
+}
+
+
+// ✅ DROP-IN: replace your existing updateTypeBreakdown() block with this entire section
+function updateTypeBreakdown() {
+  const norm = (s) => String(s || "").trim().replace(/\s+/g, " ").toUpperCase();
+  const stripPD = (s) => String(s || "").replace(/\s*\(PD\)\s*/i, "").trim();
+
+  // Normalize to display buckets we want to COUNT (leaf buckets)
+  const DISPLAY_MAP = new Map([
+    ["DATA BUOY", "BUOY"], ["BUOY", "BUOY"],
+    ["DART BUOY", "DART"], ["DART", "DART"],
+    ["CMAN", "OTHER"], ["C MAN", "OTHER"], ["C-MAN", "OTHER"], ["OTHER", "OTHER"],
+    ["FIXED","OTHER"], ["OILRIG","OTHER"], ["USV","OTHER"],
+    ["WSR-88D", "WSR88D"], ["WSR88D", "WSR88D"],
+    ["TDWR", "TDWR SPG"], ["TDWR SPG", "TDWR SPG"],
+    ["VWP", "VWP"],
+
+    ["FACILITIES", "FACILITIES"],
+    ["NWR", "NWR"],
+    ["UA", "UA"],
+    ["UPPER AIR", "UA"],
+
+    ["AWIPS", "AWIPS"],      // base AWIPS (PD)
+    ["SBN", "SBN"],
+
+    // ASOS handled specially below (station vs ACU/DCP)
+    ["ASOS", "ASOS"]
+  ]);
+
+  const toLeaf = (name) => {
+    const cleaned = stripPD(name);
+    const k = norm(cleaned);
+    return DISPLAY_MAP.get(k) || cleaned || "Unknown";
+  };
+
+  const isOutage = (status) => isOutageStatus_(status);
+
+  // Leaf buckets only (parents are computed rollups)
+  const LEAVES_IN_ORDER = [
+    // ASOS leaves
+    "ASOS STATION", "ACU", "DCP", "DOW",
+    // AWIPS leaves
+    "AWIPS", "SBN",
+    // BUOYS leaves
+    "BUOY", "DART", "TAO", "OTHER",
+    // singles
+    "FACILITIES", "NWR",
+    // RADAR leaves
+    "TDWR SPG", "VWP", "WSR88D",
+    // UA
+    "UA"
+  ];
+
+  // Parent hierarchy (display order)
+  const PARENTS = [
+    { label: "ASOS", children: ["ASOS STATION", "ACU", "DCP", "DOW"] },
+    { label: "AWIPS", children: ["AWIPS", "SBN"] },
+    { label: "BUOYS", children: ["BUOY", "DART", "TAO", "OTHER"] },
+    { label: "FACILITIES", children: [] },
+    { label: "NWR", children: [] },
+    { label: "RADAR", children: ["TDWR SPG", "VWP", "WSR88D"] },
+    { label: "UA", children: [] }
+  ];
+
+
+  const totals = Object.create(null);
+  const downs  = Object.create(null);
+  for (const k of LEAVES_IN_ORDER) { totals[k] = 0; downs[k] = 0; }
+
+  // Dedup keying: keep your current approach (PID/SID primary),
+  // plus special handling for DCP overlays (can be multiple per station)
+  const seen = new Set();
+
+  const inc = (bucket, uniqueKey, out) => {
+    if (!bucket || !uniqueKey) return;
+    if (isExcludedProgram(bucket)) return;
+
+    const k = `${bucket}|${uniqueKey}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+
+    totals[bucket] = (totals[bucket] || 0) + 1;
+    if (out) downs[bucket] = (downs[bucket] || 0) + 1;
+  };
+
+  // ✅ Status Totals should ignore Show-Only-Down, but respect all other filters/program view
+  const all =
+    Array.isArray(window._statusTotalsFeatures) ? window._statusTotalsFeatures :
+    (Array.isArray(currentFilteredFeatures) ? currentFilteredFeatures : []);
+
+
+  for (const f of all) {
+    const p = f?.properties || {};
+    const out = isOutage(getStatusValue_(p));
+
+    const pid = String(p.pid || p.siteId || "").trim().toUpperCase();
+    const sid = String(p.sid || "").trim().toUpperCase();
+    const id  = pid || sid;
+    if (!id) continue;
+
+    const pgmaVal = String(p.pgma || p.PGMA || "").trim().toUpperCase();
+    const pgmaKey = pgmaVal.replace(/\s+/g, ""); // "ASOS (PD)" -> "ASOS(PD)"
+    const kindVal = String(p.kind || p.KIND || "").trim().toUpperCase();
+    const typeVal = String(p.type || p.programType || p.program || "").trim().toUpperCase();
+    const subtype = String(p.subtype || "").trim().toUpperCase();
+
+    // -------------------------
+    // ASOS(PD): station vs overlays
+    // -------------------------
+    if (pgmaKey === "ASOS(PD)") {
+      const isAcu = (kindVal === "ACU" || typeVal === "ACU");
+      const isDcp = (kindVal.startsWith("DCP") || typeVal === "DCP");
+      const pgmaGroup = String(p.pgmaGroup || "").trim().toUpperCase();
+      const isDoW = (pgmaGroup === "DOD/USN");
+
+      if (isAcu) {
+        inc("ACU", id, out);
+        continue;
+      }
+
+      if (isDcp) {
+        const coords = f?.geometry?.coordinates || [];
+        const lon = Number(coords[0]), lat = Number(coords[1]);
+        const dcpKey = `${id}|${kindVal || "DCP"}|${Number.isFinite(lat) ? lat.toFixed(6) : "?"}|${Number.isFinite(lon) ? lon.toFixed(6) : "?"}`;
+        inc("DCP", dcpKey, out);
+        continue;
+      }
+
+      // base ASOS station point vs DoW subset
+      inc(isDoW ? "DOW" : "ASOS STATION", id, out);
+      continue;
+    }
+
+    // -------------------------
+    // RADAR(PD): leaf by subtype bucket
+    // -------------------------
+    if (pgmaKey === "RADAR(PD)") {
+      const leaf = toLeaf(subtype || "RADAR");
+      // Only count the radar leaves we care about
+      if (leaf === "WSR88D" || leaf === "TDWR SPG" || leaf === "VWP") {
+        inc(leaf, id, out);
+      }
+      continue;
+    }
+
+    // -------------------------
+    // Skip overlays (except ASOS handled above)
+    // -------------------------
+    if (kindVal) continue;
+
+    // -------------------------
+    // AWIPS base is AWIPS(PD); SBN is its own program rows
+    // -------------------------
+    if (pgmaKey === "AWIPS(PD)") {
+      inc("AWIPS", id, out);
+      continue;
+    }
+
+    // NWR base is NWR(PD)
+    if (pgmaKey === "NWR(PD)") {
+      inc("NWR", id, out);
+      continue;
+    }
+
+    // Otherwise leaf comes from type/program/pgma
+    // (covers FACILITIES, UA, SBN, BUOY/C-MAN/DART/TAO, etc)
+    const leaf = toLeaf(typeVal || pgmaVal);
+    if (!leaf) continue;
+
+    // Normalize BUOYS children that might appear in PGMA
+    // (your data may have them in PGMA rather than TYPE)
+    const leafNorm = normalizeProgramForFilter(leaf);
+
+    // Keep only leaves we track (prevents odd categories from polluting totals)
+    const finalLeaf =
+      (leafNorm === "BUOY" || leafNorm === "DART" || leafNorm === "TAO" || leafNorm === "OTHER") ? leafNorm :
+      (leafNorm === "UA") ? "UA" :
+      (leafNorm === "SBN") ? "SBN" :
+      (leafNorm === "FACILITIES") ? "FACILITIES" :
+      leaf;
+
+    if (totals[finalLeaf] === undefined) continue;
+    inc(finalLeaf, id, out);
+  }
+
+  // ---- Rollups (parents) ----
+  const rollup = (keys) => keys.reduce((sum, k) => sum + (totals[k] || 0), 0);
+  const rollupDown = (keys) => keys.reduce((sum, k) => sum + (downs[k] || 0), 0);
+
+  const pct = (up, total) => total ? (up / total) * 100 : 100;
+
+  const row = (label, total, down, indent = false, cls = "") => {
+    const up = Math.max((total || 0) - (down || 0), 0);
+    return `
+      <tr class="${cls}">
+        <td class="prog${indent ? " indent" : ""}">${label}</td>
+        <td class="num">${total || 0}</td>
+        <td class="num">${up}</td>
+        <td class="num">${down || 0}</td>
+        <td class="num">${pct(up, total || 0).toFixed(1)}%</td>
+      </tr>
+    `;
+  };
+
+  let body = "";
+
+  for (const parent of PARENTS) {
+    // Parent with children rollup
+    if (parent.children && parent.children.length) {
+      const t = rollup(parent.children);
+      const d = rollupDown(parent.children);
+
+      if (t || d) {
+        body += row(parent.label, t, d, false, "sid-section");
+
+        for (const c of parent.children) {
+          const ct = totals[c] || 0;
+          const cd = downs[c] || 0;
+          if (!ct && !cd) continue;
+
+          // nicer label for ASOS station / AWIPS base
+          const label =
+            (c === "ASOS STATION") ? "ASOS" :
+            (c === "AWIPS") ? "AWIPS" :
+            c;
+
+          body += row(label, ct, cd, true);
+        }
+      }
+      continue;
+    }
+
+    // Single-level parent (no children)
+    const t = totals[parent.label] || 0;
+    const d = downs[parent.label] || 0;
+
+    const isBoldParent = (parent.label === "FACILITIES" || parent.label === "NWR" || parent.label === "UA");
+    if (t || d) body += row(parent.label, t, d, false, isBoldParent ? "sid-parent" : "");
+
+  }
+
+  // ---- Grand totals (sum leaves only; never count parents) ----
+  let grandTotal = 0, grandDown = 0;
+  for (const k of LEAVES_IN_ORDER) {
+    grandTotal += totals[k] || 0;
+    grandDown  += downs[k] || 0;
+  }
+  const grandUp = Math.max(grandTotal - grandDown, 0);
+
+  const html = `
+    <div class="sid-counter-title">Status Totals</div>
+    <table class="program-stats compact">
+      <thead>
+        <tr>
+          <th class="left">Program</th>
+          <th>Total</th>
+          <th>Up</th>
+          <th>Down</th>
+          <th>%</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${body || `<tr><td colspan="5">None</td></tr>`}
+        <tr class="totals">
+          <td class="prog"><b>Total</b></td>
+          <td class="num"><b>${grandTotal}</b></td>
+          <td class="num"><b>${grandUp}</b></td>
+          <td class="num"><b>${grandDown}</b></td>
+          <td class="num"><b>${pct(grandUp, grandTotal).toFixed(1)}%</b></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  const container = document.getElementById("typeBreakdown");
+  if (container) container.innerHTML = html;
+}
+
+/* ===========================
+ * Timed Rotation (optional Down-only + optional Zoom focus)
+ * - Rotates across selected parent programs
+ * - Does NOT change checkbox selections; applyFilters() uses an override
+ * - Zoom only happens if Zoom Map to Feature is checked
+ * - Down-only only happens if Show only Down/Degraded is checked
+ * - NEW: If "Auto Expand" is checked under Down Sites, rotation will auto-expand
+ *        the matching program group and collapse the others (and restore on stop).
+ * =========================== */
+
+const ROTATION_ALLOWED_PARENTS = ["ASOS","AWIPS","BUOYS","FACILITIES","NWR","RADAR","UA"];
+
+// Must match your program tree groups (parents + children)
+const ROTATION_GROUPS = {
+  "ASOS":       ["ACU","DCP","DOW"],
+  "AWIPS":      ["SBN"],
+  "BUOYS":      ["OTHER","DART","TAO","BUOY"],  // BUOY appears in data; safe
+  "FACILITIES": [],
+  "NWR":        [],
+  "RADAR":      ["TDWR SPG","VWP","WSR88D"],
+  "UA":         []
+};
+
+let _rotationTimer = null;  // timeout handle
+let _rotationIndex = 0;
+
+const ROTATION_LAST_PARENT_KEY = "rotationLastParent";
+
+// the current parent program being shown (read by applyFilters override)
+window._rotationParentProgram = "";
+
+/* ===========================
+ * Down Sites Auto-Expand helpers (required for rotation)
+ * - Uses the same localStorage keys renderDownTable() already uses:
+ *     downProgExpanded_<PARENT>
+ * - Snapshot/restore so user’s expand/collapse state returns after rotation stops.
+ * =========================== */
+
+let _downAutoExpandSnapshot_ = null;
+
+function _downAutoExpandEnabled_(){
+  // checkbox in Index.html: id="downAutoExpand"
+  return !!document.getElementById("downAutoExpand")?.checked;
+}
+
+function _downAutoExpandBegin_(){
+  // Take snapshot once per rotation run
+  if (_downAutoExpandSnapshot_) return;
+
+  const snap = {};
+  for (const parent of (Array.isArray(ROTATION_ALLOWED_PARENTS) ? ROTATION_ALLOWED_PARENTS : [])) {
+    const key = `downProgExpanded_${parent}`;
+    const v = localStorage.getItem(key);
+    // default (your renderDownTable defaults to true)
+    snap[key] = (v === null) ? "true" : v;
+  }
+  _downAutoExpandSnapshot_ = snap;
+}
+
+function _downAutoExpandToParent_(parent){
+  const p = String(parent || "").trim().toUpperCase();
+  if (!p) return;
+
+  // Ensure we have a snapshot so we can restore later
+  _downAutoExpandBegin_();
+
+  // Expand only the active parent, collapse the rest
+  for (const x of (Array.isArray(ROTATION_ALLOWED_PARENTS) ? ROTATION_ALLOWED_PARENTS : [])) {
+    const key = `downProgExpanded_${x}`;
+    localStorage.setItem(key, (x === p) ? "true" : "false");
+  }
+
+  // Re-render Down table so chevrons + rows update immediately
+  try { renderDownTable(); } catch(_) {}
+}
+
+function _downAutoExpandEnd_(){
+  if (!_downAutoExpandSnapshot_) return;
+
+  // Restore saved user states
+  for (const [k, v] of Object.entries(_downAutoExpandSnapshot_)) {
+    try { localStorage.setItem(k, String(v)); } catch(_) {}
+  }
+  _downAutoExpandSnapshot_ = null;
+
+  // Re-render Down table to reflect restored state
+  try { renderDownTable(); } catch(_) {}
+}
+
+function saveRotationLastParent_(){
+  try {
+    const v = String(window._rotationParentProgram || "").trim().toUpperCase();
+    if (v) localStorage.setItem(ROTATION_LAST_PARENT_KEY, v);
+    else localStorage.removeItem(ROTATION_LAST_PARENT_KEY);
+  } catch (_) {}
+}
+
+function loadRotationLastParent_(){
+  try {
+    return String(localStorage.getItem(ROTATION_LAST_PARENT_KEY) || "").trim().toUpperCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function clearRotationLastParent_(){
+  try { localStorage.removeItem(ROTATION_LAST_PARENT_KEY); } catch (_) {}
+}
+
+// ---- Rotation interval from UI (Pause seconds input) ----
+function _getRotationIntervalMs_(){
+  const el = document.getElementById("rotationPauseSeconds");
+  const n = Number(el?.value);
+  const sec = (Number.isFinite(n) && n > 0) ? n : 5;
+  return Math.round(sec * 1000);
+}
+
+function _uiSelectedProgramsSet_(){
+  return new Set(
+    Array.from(document.querySelectorAll(".programCheckbox:checked"))
+      .map(cb => normalizeProgramForFilter(cb.value))
+      .filter(Boolean)
+  );
+}
+
+function _rotationProgramsForParent_(parent, uiSelectedPrograms){
+  const p = String(parent || "").trim().toUpperCase();
+  const ui = (uiSelectedPrograms instanceof Set) ? uiSelectedPrograms : _uiSelectedProgramsSet_();
+
+  const children = Array.isArray(ROTATION_GROUPS[p]) ? ROTATION_GROUPS[p].slice() : [];
+  const parentChecked = ui.has(p);
+  const checkedChildren = children.filter(ch => ui.has(ch));
+
+  // Parent checked, no child checked:
+  // rotate/show only the parent program itself
+  if (parentChecked && !checkedChildren.length) {
+    return new Set([p]);
+  }
+
+  // Child-only selection:
+  // rotate/show only the selected child programs
+  if (!parentChecked && checkedChildren.length) {
+    return new Set(checkedChildren);
+  }
+
+  // Parent + one or more children checked:
+  // show exactly what user checked in that family
+  if (parentChecked && checkedChildren.length) {
+    return new Set([p, ...checkedChildren]);
+  }
+
+  // Fallback for single programs with no children
+  if (!children.length && parentChecked) {
+    return new Set([p]);
+  }
+
+  return new Set();
+}
+
+function _buildRotationListFromUI_(){
+  const ui = _uiSelectedProgramsSet_();
+
+  const hasAsosFamily  = ui.has("ASOS") || ui.has("ACU") || ui.has("DCP") || ui.has("DOW");
+  const hasAwipsFamily = ui.has("AWIPS") || ui.has("SBN");
+  const hasBuoysFamily = ui.has("BUOYS") || ui.has("BUOY") || ui.has("OTHER") || ui.has("DART") || ui.has("TAO");
+  const hasRadarFamily = ui.has("RADAR") || ui.has("WSR88D") || ui.has("TDWR SPG") || ui.has("VWP");
+
+  const list = [];
+  if (hasAsosFamily)  list.push("ASOS");
+  if (hasAwipsFamily) list.push("AWIPS");
+  if (hasBuoysFamily) list.push("BUOYS");
+  if (ui.has("FACILITIES")) list.push("FACILITIES");
+  if (ui.has("NWR"))        list.push("NWR");
+  if (hasRadarFamily)       list.push("RADAR");
+  if (ui.has("UA"))         list.push("UA");
+
+  return list.length ? list : ROTATION_ALLOWED_PARENTS.slice();
+}
+
+function _programDrawPriority_(bucket){
+  const b = String(bucket || "").trim().toUpperCase();
+
+  // child first, parent last so parent stays on top
+  if (b === "ACU" || b === "DCP" || b === "DOW") return 10;
+  if (b === "ASOS") return 19;
+
+  if (b === "SBN") return 20;
+  if (b === "AWIPS") return 29;
+
+  if (b === "BUOY" || b === "DART" || b === "TAO" || b === "OTHER") return 30;
+  if (b === "BUOYS") return 39;
+
+  if (b === "TDWR SPG" || b === "VWP" || b === "WSR88D") return 40;
+  if (b === "RADAR") return 49;
+
+  if (b === "FACILITIES") return 60;
+  if (b === "NWR") return 70;
+  if (b === "UA") return 80;
+
+  return 999;
+}
+
+
+
+function stopTimedRotation(){
+  if (_rotationTimer) clearTimeout(_rotationTimer);
+  _rotationTimer = null;
+
+  if (window._popupResumePoll) {
+    clearInterval(window._popupResumePoll);
+    window._popupResumePoll = null;
+  }
+
+  _rotationIndex = 0;
+  window._rotationParentProgram = "";
+  window._rotationPausedByPopup = false;
+
+  if (_downAutoExpandEnabled_()) _downAutoExpandEnd_();
+}
+
+
+/* --- Pause rotation while a popup is open --- */
+function pauseTimedRotationForPopup(){
+  const rotCb = document.getElementById("timedRotation");
+  if (!rotCb?.checked) return;                 // rotation not enabled
+  if (window._rotationPausedByPopup) return;   // already paused
+
+  if (_rotationTimer) clearTimeout(_rotationTimer);
+  _rotationTimer = null;
+  window._rotationPausedByPopup = true;
+
+  // ✅ Auto-resume poll: some popup close paths do not fire watchers consistently
+  if (window._popupResumePoll) clearInterval(window._popupResumePoll);
+
+  window._popupResumePoll = setInterval(() => {
+    try {
+      // if user turned rotation off, stop polling
+      const cb = document.getElementById("timedRotation");
+      if (!cb?.checked) {
+        clearInterval(window._popupResumePoll);
+        window._popupResumePoll = null;
+        return;
+      }
+
+      // if we've already resumed, stop polling
+      if (!window._rotationPausedByPopup) {
+        clearInterval(window._popupResumePoll);
+        window._popupResumePoll = null;
+        return;
+      }
+
+      const isOpen = (typeof window._popupIsOpenNow === "function") ? window._popupIsOpenNow() : false;
+      if (!isOpen) {
+        clearInterval(window._popupResumePoll);
+        window._popupResumePoll = null;
+        resumeTimedRotationForPopup(); // will schedule the next tick
+      }
+    } catch (_) {}
+  }, 300); // fast enough to feel instant, light enough to be safe
+}
+
+
+function resumeTimedRotationForPopup(){
+  const rotCb = document.getElementById("timedRotation");
+  if (!rotCb?.checked) return;                 // user turned it off
+  if (!window._rotationPausedByPopup) return;  // not paused by popup
+
+  // stop polling
+  if (window._popupResumePoll) {
+    clearInterval(window._popupResumePoll);
+    window._popupResumePoll = null;
+  }
+
+    // ✅ If popup is still open (content actually present), do nothing.
+  // Use our popupIsOpenNow() logic instead of container box checks (those can lie in docked mode).
+  try {
+    const isOpen = (typeof window._popupIsOpenNow === "function") ? window._popupIsOpenNow() : false;
+    if (isOpen) return;
+  } catch (_) {}
+
+
+  window._rotationPausedByPopup = false;
+
+  // ✅ Ensure timer restarts even if something previously nulled it
+  if (_rotationTimer) clearTimeout(_rotationTimer);
+  _rotationTimer = setTimeout(_rotationTick_, _getRotationIntervalMs_());
+}
+
+
+
+
+function _rotationTick_(){
+  const rotCb = document.getElementById("timedRotation");
+  if (!rotCb?.checked) return;
+
+  // ✅ If a popup opened and paused rotation, do NOT advance or reschedule
+  if (window._rotationPausedByPopup) {
+    _rotationTimer = null;
+    return;
+  }
+
+
+  let list = _buildRotationListFromUI_();
+  if (!list.length) {
+    stopTimedRotation();
+    applyFilters();
+    return;
+  }
+
+  _rotationIndex = (_rotationIndex + 1) % list.length;
+  window._rotationParentProgram = list[_rotationIndex];
+  saveRotationLastParent_();
+
+  applyFilters();
+
+  // Auto expand Down Sites group to match current rotation parent
+  if (_downAutoExpandEnabled_()) {
+    _downAutoExpandBegin_();
+    _downAutoExpandToParent_(window._rotationParentProgram);
+  }
+
+    if (!window._rotationPausedByPopup) {
+    _rotationTimer = setTimeout(_rotationTick_, _getRotationIntervalMs_());
+  } else {
+    _rotationTimer = null;
+  }
+
+}
+
+function startTimedRotation(){
+  stopTimedRotation();
+  window._rotationPausedByPopup = false;
+
+  let list = _buildRotationListFromUI_();
+
+  if (!list.length) {
+    window._rotationParentProgram = "";
+    clearRotationLastParent_();
+    applyFilters();
+    return;
+  }
+
+  const savedParent = loadRotationLastParent_();
+  const savedIdx = savedParent ? list.indexOf(savedParent) : -1;
+
+  if (savedIdx >= 0) {
+    _rotationIndex = savedIdx;
+  } else {
+    _rotationIndex = 0;
+  }
+
+  window._rotationParentProgram = list[_rotationIndex];
+  saveRotationLastParent_();
+  applyFilters();
+
+  // Auto expand immediately for the first program (if enabled)
+  if (_downAutoExpandEnabled_()) {
+    _downAutoExpandBegin_();
+    _downAutoExpandToParent_(window._rotationParentProgram);
+  }
+
+  _rotationTimer = setTimeout(_rotationTick_, _getRotationIntervalMs_());
+}
+
+function ensureTimedRotationStartup_(){
+  const rotCb = document.getElementById("timedRotation");
+
+  // If rotation is not enabled, make sure we do not carry a stale parent program
+  if (!rotCb?.checked) {
+    if (!_rotationTimer) {
+      window._rotationParentProgram = "";
+    }
+    return;
+  }
+
+  // Already running
+  if (_rotationTimer) return;
+
+  // Do not interfere with popup-pause logic
+  if (window._rotationPausedByPopup) return;
+
+  // Delay one tick so restored filters/points/render complete first
+  setTimeout(() => {
+    try {
+      const cb = document.getElementById("timedRotation");
+      if (!cb?.checked) return;
+      if (_rotationTimer) return;
+      if (window._rotationPausedByPopup) return;
+
+      startTimedRotation();
+    } catch (e) {
+      console.warn("ensureTimedRotationStartup_ failed:", e);
+    }
+  }, 0);
+}
+
+function installTimedRotationUI(){
+  // ✅ Prevent duplicate global listeners if setupUI() ever runs again
+  if (window._timedRotationUIInstalled) return;
+  window._timedRotationUIInstalled = true;
+
+  const rotCb = document.getElementById("timedRotation");
+  if (!rotCb) return;
+
+  rotCb.addEventListener("change", () => {
+    saveFiltersToStorage();
+
+    if (rotCb.checked) {
+      startTimedRotation();
+    } else {
+      stopTimedRotation();
+      window._rotationParentProgram = "";
+      clearRotationLastParent_();
+      applyFilters();
+    }
+  });
+
+  // While rotation is ON:
+  // - If programs change, restart rotation (so the list updates immediately)
+  // - If showDownOnly or zoomOnFilter change, just re-apply filters
+  // - If pause seconds changes, restart rotation so timing applies immediately
+  document.addEventListener("change", (e) => {
+    if (!rotCb.checked) return;
+
+    if (e.target?.classList?.contains("programCheckbox")) {
+      startTimedRotation();
+      return;
+    }
+
+    if (e.target?.id === "rotationPauseSeconds") {
+      saveFiltersToStorage();
+      startTimedRotation();
+      return;
+    }
+
+    if (e.target?.id === "showDownOnly" || e.target?.id === "zoomOnFilter") {
+      applyFilters();
+      return;
+    }
+  });
+}
+
+
+
+
+      
+
+      /* ===== Filters ===== */
+function applyFilters(){
+  // Expose to global scope so overlay/background passes (outside ArcGIS require scope) can re-filter safely.
+  window.applyFilters = applyFilters;
+
+  dbg("applyFilters(): total features =", (features||[]).length);
+
+
+  const get = (id) => (document.getElementById(id)?.value || "").toString().trim();
+  const f_pid   = get("f_pid").toLowerCase();
+  const f_sid   = get("f_sid").toLowerCase();
+  const f_wfo   = get("f_wfo").toLowerCase();
+  const f_city  = get("f_city").toLowerCase();
+  const f_state = get("f_state").toLowerCase();
+  const f_any   = get("f_any").toLowerCase();
+
+  // Regions selected in UI
+  const regions = new Set(
+    Array.from(document.querySelectorAll(".regionCheckbox:checked"))
+      .map(c => String(c.value || "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+
+  // Office Types selected in UI
+  const officeTypes = new Set(
+    Array.from(document.querySelectorAll(".officeTypeCheckbox:checked"))
+      .map(c => String(c.value || "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+
+  // Programs selected in UI
+  const uiSelectedPrograms = new Set(
+    Array.from(document.querySelectorAll(".programCheckbox:checked"))
+      .map(c => normalizeProgramForFilter(c.value))
+      .filter(Boolean)
+  );
+
+  // Timed Rotation override: constrain program filtering WITHOUT changing checkboxes
+  const rotCb = document.getElementById("timedRotation");
+  const rotOn = !!rotCb?.checked;
+  const rotParent = String(window._rotationParentProgram || "").trim().toUpperCase();
+
+  let selectedPrograms = uiSelectedPrograms;
+  if (rotOn && rotParent) {
+    const constrained = _rotationProgramsForParent_(rotParent, uiSelectedPrograms);
+
+    // During timed rotation, if nothing in the active family is explicitly checked,
+    // still rotate that parent family instead of showing all programs.
+    if (constrained.size > 0) {
+      selectedPrograms = constrained;
+    } else {
+      selectedPrograms = new Set([rotParent]);
+    }
+  }
+
+
+  const zoomFocus = !!document.getElementById("zoomOnFilter")?.checked;
+  const downOnly  = !!document.getElementById("showDownOnly")?.checked;
+  const hideOutages = !!document.getElementById("hideDownDegraded")?.checked;
+
+
+  // Region normalization (supports full names + SR/CR/ER/etc.)
+  const REGION_CODE_TO_NAME = {
+    "SR": "SOUTHERN REGION",
+    "CR": "CENTRAL REGION",
+    "ER": "EASTERN REGION",
+    "WR": "WESTERN REGION",
+    "PR": "PACIFIC REGION",
+    "AR": "ALASKA REGION"
+  };
+  const normRegion = (v) => {
+    const s = String(v || "").trim().toUpperCase();
+    if (!s) return "";
+    return REGION_CODE_TO_NAME[s] || s;
+  };
+
+  // Decide a filter-bucket program for each feature
+  // (ASOS station vs ACU/DCP; RADAR subtype; otherwise type/pgma/program/kind)
+  const programBucket = (p) => {
+    const pgmaRaw = String(p.pgma ?? p.PGMA ?? "").trim().toUpperCase();
+    const pgmaKey = pgmaRaw.replace(/\s+/g, "");
+    const kindVal = String(p.kind ?? p.KIND ?? "").trim().toUpperCase();
+    const typeVal = String(p.type ?? p.programType ?? p.program ?? "").trim().toUpperCase();
+    const subtype = String(p.subtype ?? "").trim().toUpperCase();
+    const pgmaGroup = String(p.pgmaGroup ?? "").trim().toUpperCase();
+
+    // ASOS(PD): base station vs ACU/DCP overlays vs DoW subset
+    if (pgmaKey === "ASOS(PD)") {
+      const isAcu = (kindVal === "ACU" || kindVal === "AA" || typeVal === "ACU");
+      const isDcp = (kindVal.startsWith("DCP") || kindVal === "DCP" || kindVal === "AD" || typeVal === "DCP");
+      const isDoW = (pgmaGroup === "DOD/USN");
+
+      if (isAcu) return "ACU";
+      if (isDcp) return "DCP";
+      if (isDoW) return "DOW";
+      return "ASOS";
+    }
+
+    // RADAR: bucket by subtype (TDWR SPG / VWP / WSR88D)
+    if (pgmaKey === "RADAR(PD)") {
+      return normalizeProgramForFilter(subtype || "RADAR");
+    }
+
+    // Overlays (kind): ACU/DCP already handled above; keep others as their kind if present
+    if (kindVal) return normalizeProgramForFilter(kindVal);
+
+    // ✅ BUOY (PD): bucket by subtype (BUOY/DART/TAO/OTHER)
+    if (pgmaKey === "BUOY(PD)") {
+      const s = normalizeProgramForFilter(subtype || "BUOY");
+      if (s === "DART" || s === "TAO" || s === "BUOY") return s;
+      return "OTHER";
+    }
+
+    // AWIPS/NWR/FAC/UA/BUOYS/SBN/etc.
+    const base = typeVal || pgmaRaw || "";
+    return normalizeProgramForFilter(base);
+  };
+
+  // Helpers for matching
+  const matchesText = (p) => {
+    const pid = String(p.pidAdj || p.pid || p.PID || p.siteId || "").trim();
+    const sid = String(p.sidAdj || p.sid || p.SID || "").trim();
+    const wfo = String(p.office || p.WFO || "").trim();
+    const city = String(p.city || p.CITY || "").trim();
+    const state = String(p.state || p.STATE || "").trim();
+
+    const stnName = String(
+      p.STN_NAME ?? p.searchableName ?? p.stn_name ?? p.stnName ?? p.name ?? ""
+    ).trim();
+
+    // Field-specific
+    if (f_pid && !pid.toLowerCase().includes(f_pid)) return false;
+    if (f_sid && !sid.toLowerCase().includes(f_sid)) return false;
+    if (f_wfo && !wfo.toLowerCase().includes(f_wfo)) return false;
+    if (f_city && !city.toLowerCase().includes(f_city)) return false;
+    if (f_state && !state.toLowerCase().includes(f_state)) return false;
+
+    // Any-field
+    if (f_any) {
+      const blob = [
+        pid, sid, wfo, city, state, stnName,
+        String(p.pgma ?? p.PGMA ?? ""),
+        String(p.type ?? p.programType ?? p.program ?? ""),
+        String(p.subtype ?? ""),
+        String(p.region ?? p.REGION ?? "")
+      ].join(" ").toLowerCase();
+      if (!blob.includes(f_any)) return false;
+    }
+
+    return true;
+  };
+
+  const matchesRegion = (p) => {
+    if (!regions.size) return true;
+    const r = normRegion(p.region || p.REGION || "");
+    return regions.has(String(r).toUpperCase());
+  };
+
+  const matchesOfficeType = (p) => {
+    if (!officeTypes.size) return true;
+
+    // try common keys; fall back to STN_DETAIL; do NOT use office code (ABQ/etc.)
+    const ot =
+      String(
+        p.officeType || p.office_type || p.OFFICE_TYPE ||
+        p.stn_detail || p.STN_DETAIL ||
+        p.siteType || p.SITE_TYPE || ""
+      ).trim().toUpperCase();
+
+    if (!ot) return false;
+    return officeTypes.has(ot);
+  };
+
+  const matchesProgram = (p) => {
+    if (!selectedPrograms.size) return true;
+
+    const b = programBucket(p);
+
+    // direct match
+    if (selectedPrograms.has(b)) return true;
+
+    // Parent selections that should include their children
+    // ASOS is intentionally NOT expanded here.
+    // That keeps ASOS, ACU, DCP, and DoW independent.
+    if (selectedPrograms.has("AWIPS")) {
+      if (b === "AWIPS" || b === "SBN") return true;
+    }
+
+    if (selectedPrograms.has("BUOYS")) {
+      if (b === "BUOYS" || b === "BUOY" || b === "DART" || b === "TAO" || b === "OTHER" || b === "C-MAN") return true;
+    }
+
+    if (selectedPrograms.has("RADAR")) {
+      if (b === "RADAR" || b === "WSR88D" || b === "TDWR SPG" || b === "VWP") return true;
+    }
+
+    return false;
+  };
+
+  // ✅ BUOY owner filter
+  // Applies to ALL rows where PIDS Col N / pgma = BUOY (PD),
+  // regardless of subtype in Col AD (BUOY, DART, TAO, FIXED, etc.)
+  const matchesBuoyAgency = (p) => {
+    const cbNws   = !!document.getElementById("buoyAgencyNws")?.checked;
+    const cbNoaa  = !!document.getElementById("buoyAgencyNoaa")?.checked;
+    const cbOther = !!document.getElementById("buoyAgencyOther")?.checked;
+
+    const selectedCount = [cbNws, cbNoaa, cbOther].filter(Boolean).length;
+
+    // none checked or all checked => no filter
+    if (selectedCount === 0 || selectedCount === 3) return true;
+
+    const pgmaU = String(p.pgma ?? p.PGMA ?? "").trim().toUpperCase().replace(/\s+/g, "");
+    const isBuoyPd = (pgmaU === "BUOY(PD)");
+
+    // Only apply owner filter to BUOY (PD) parent rows
+    if (!isBuoyPd) return true;
+
+    const agency = classifyBuoyAgency_(p.pgmaGroup ?? "");
+
+    if (agency === "NWS" && cbNws) return true;
+    if (agency === "NOAA" && cbNoaa) return true;
+    if (agency === "OTHER" && cbOther) return true;
+
+    return false;
+  };
+
+
+  // Apply all filters EXCEPT downOnly first (for Status Totals)
+  const wwaOnly = !!document.getElementById("showWWAOnly")?.checked;
+  const wwaWfos = new Set(
+    (window.ACTIVE_WWA_WFOS || [])
+      .map(x => String(x ?? "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+
+  const filteredAll = (features || []).filter(f => {
+    const p = f?.properties || {};
+    if (isExcludedProgram(programBucket(p))) return false;
+    if (!matchesText(p)) return false;
+    if (!matchesRegion(p)) return false;
+    if (!matchesOfficeType(p)) return false;
+    if (!matchesProgram(p)) return false;
+
+    // ✅ NEW: WWA-only filter (PIDS Col AE -> p.office) must be in WWA sheet Col B
+    if (wwaOnly) {
+      const wfo = String(p.office ?? "").trim().toUpperCase();
+      if (!wfo || !wwaWfos.has(wfo)) return false;
+    }
+
+    if (!matchesBuoyAgency(p)) return false;
+    return true;
+  });
+
+
+  // ✅ This is the set used by Status Totals (ignores showDownOnly)
+  window._statusTotalsFeatures = filteredAll;
+
+  // Then apply downOnly for what we render (if enabled)
+  let filteredForMap =
+    downOnly
+      ? filteredAll.filter(f => isOutageStatus_(getStatusValue_(f?.properties || {})))
+      : hideOutages
+        ? filteredAll.filter(f => !isOutageStatus_(getStatusValue_(f?.properties || {})))
+        : filteredAll;
+
+  // Parent should draw on top when parent + child are both selected.
+  // Sort child first / parent last before renderPoints().
+  filteredForMap = filteredForMap.slice().sort((a, b) => {
+    const pa = a?.properties || {};
+    const pb = b?.properties || {};
+
+    const ba = programBucket(pa);
+    const bb = programBucket(pb);
+
+    const da = _programDrawPriority_(ba);
+    const db = _programDrawPriority_(bb);
+
+    if (da !== db) return da - db;
+
+    const aId = String(pa.pidAdj || pa.pid || pa.PID || pa.siteId || pa.sid || "").trim().toUpperCase();
+    const bId = String(pb.pidAdj || pb.pid || pb.PID || pb.siteId || pb.sid || "").trim().toUpperCase();
+
+    return aId.localeCompare(bId);
+  });
+
+  // Update global for Down table builder
+  currentFilteredFeatures = filteredForMap;
+  window._currentFilteredFeatures = filteredForMap;
+
+  // Render points
+  try { renderPoints(filteredForMap); } catch (e) { console.error("renderPoints failed:", e); }
+
+  // Update panels
+  try { updateTypeBreakdown(); } catch (e) {}
+  try { renderDownTable(); } catch (e) {}
+  try { updateDownCounter(); } catch (e) {}
+
+  // Optional zoom-to-focus
+  if (zoomFocus) {
+    try { zoomToFeatures_(filteredForMap); } catch (e) {}
+  }
+
+  // Persist filter state
+  try { saveFiltersToStorage(); } catch (e) {}
+}
+
+
+
+
+
+      function loadSidebarState(){
+
+        const c = document.getElementById("mainContainer");
+        if (localStorage.getItem("sidebarCollapsed") === "true") {
+          c.classList.add("sidebar-collapsed");
+          const btn = document.getElementById("toggleSidebarBtn");
+          if (btn) btn.textContent = "►";
+        }
+        if (localStorage.getItem("rightSidebarCollapsed") === "true") {
+          c.classList.add("right-sidebar-collapsed");
+          const btn = document.getElementById("toggleRightSidebarBtn");
+          if (btn) btn.textContent = "◄";
+        }
+
+      }
+
+            function syncViewPadding(){
+        const viewDiv = document.getElementById("viewDiv");
+        if (!viewDiv || !window._esriView) return;
+
+        const view = window._esriView;
+        const v = viewDiv.getBoundingClientRect();
+
+        const rect = (el) => (el ? el.getBoundingClientRect() : null);
+        const overlapX = (a,b) => Math.max(0, Math.min(a.right,b.right) - Math.max(a.left,b.left));
+        const overlapY = (a,b) => Math.max(0, Math.min(a.bottom,b.bottom) - Math.max(a.top,b.top));
+
+        // Sidebars + toggles
+        const leftEl   = document.querySelector("#sidebar");
+        const rightEl  = document.querySelector("#rightSidebar, .right-sidebar, .sidebar-right");
+        const headerEl = document.querySelector("#header");
+        const leftToggle  = document.getElementById("toggleSidebarBtn");
+        const rightToggle = document.getElementById("toggleRightSidebarBtn");
+
+        let left = 0, right = 0, top = 0;
+
+        // Sidebar overlaps
+        const l = rect(leftEl);
+        if (l && overlapY(v,l) > 0) left = overlapX(v,l);
+
+        const r = rect(rightEl);
+        if (r && overlapY(v,r) > 0) right = overlapX(v,r);
+
+        // Toggle overlaps (these were causing the popup edge to be covered)
+        const lt = rect(leftToggle);
+        if (lt && overlapY(v,lt) > 0) left += overlapX(v,lt);
+
+        const rt = rect(rightToggle);
+        if (rt && overlapY(v,rt) > 0) right += overlapX(v,rt);
+
+        // Top header overlap (only if it physically overlays the map)
+        const h = rect(headerEl);
+        if (h && overlapX(v,h) > 0) top = Math.max(0, h.bottom - v.top);
+
+        view.padding = {
+          left:   Math.round(Math.max(0, left)),
+          right:  Math.round(Math.max(0, right)),
+          top:    Math.round(Math.max(0, top)),
+          bottom: 0
+        };
+
+        // Keep your zoom dock aligned with visible map area
+        if (window._zoomDock){
+          window._zoomDock.style.left = (view.padding.left + 10) + "px";
+          window._zoomDock.style.top  = (view.padding.top  + 10) + "px";
+        }
+
+        try { positionMapClockBar_(); } catch(_) {}
+
+      }
+
+
+
+
+
+
+    });
+}
+
+/* ===========================
+ * Active user heartbeat
+ * - ping on load
+ * - ping every 4 minutes
+ * - ping when tab becomes visible again
+ * =========================== */
+let __heartbeatTimer = null;
+const HEARTBEAT_INTERVAL_MS = 4 * 60 * 1000; // 4 minutes
+
+function sendHeartbeat_() {
+  try {
+    if (!google || !google.script || !google.script.run) return;
+
+    google.script.run
+      .withFailureHandler(function(err){
+        console.warn("Heartbeat failed:", err);
+      })
+      .recordHeartbeat();
+  } catch (e) {
+    console.warn("Heartbeat error:", e);
+  }
+}
+
+function startHeartbeat_() {
+  // fire once immediately
+  sendHeartbeat_();
+
+  // avoid duplicate timers
+  if (__heartbeatTimer) {
+    clearInterval(__heartbeatTimer);
+  }
+
+  __heartbeatTimer = setInterval(() => {
+    // only ping while tab is visible
+    if (!document.hidden) {
+      sendHeartbeat_();
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+// when the user comes back to the tab, refresh presence immediately
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    sendHeartbeat_();
+  }
+});
+
+/* ===== Startup ===== */
+function startAppWhenReady(){
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startAppWhenReady);
+    return;
+  }
+  if (typeof window.require !== 'function') {
+    setTimeout(startAppWhenReady, 50);
+    return;
+  }
+  try{
+    initializeApp();
+    initMapClockBar_();
+    updateLastUpdatedBanner(); // populate left banner on load
+    wireCollapsiblesWithRetry();
+    startHeartbeat_();
+    setInterval(updateTimerDisplay,1000);
+
+    // Kick data load after the shell/map init starts,
+    // so the map frame appears first.
+    setTimeout(function () {
+      try { fetchData(false); } catch (e) { console.error(e); }
+    }, 0);
+  }catch(e){
+    console.error(e);
+    alert('Startup error: ' + e.message);
+  }
+}
+startAppWhenReady();
+
+/* ===========================
+ * About / Help modal wiring
+ * =========================== */
+(function () {
+  if (window.installAboutHelp) return;
+
+  function openAboutHelp() {
+    const overlay = document.getElementById("aboutHelpOverlay");
+    const modal   = document.getElementById("aboutHelpModal");
+    if (!overlay || !modal) return;
+
+    overlay.style.display = "block";
+    modal.style.display   = "block";
+    overlay.setAttribute("aria-hidden", "false");
+  }
+
+  function closeAboutHelp() {
+    const overlay = document.getElementById("aboutHelpOverlay");
+    const modal   = document.getElementById("aboutHelpModal");
+    if (!overlay || !modal) return;
+
+    overlay.style.display = "none";
+    modal.style.display   = "none";
+    overlay.setAttribute("aria-hidden", "true");
+  }
+
+  function toggleAboutHelp() {
+    const modal = document.getElementById("aboutHelpModal");
+    if (!modal) return;
+    const isOpen = (modal.style.display === "block");
+    if (isOpen) closeAboutHelp();
+    else openAboutHelp();
+  }
+
+  window.installAboutHelp = function installAboutHelp() {
+    const btn     = document.getElementById("aboutHelpBtn");
+    const overlay = document.getElementById("aboutHelpOverlay");
+    const closeBtn= document.getElementById("aboutHelpCloseBtn");
+
+    // If About.html isn't included yet, just no-op safely.
+    if (!btn || !overlay || !closeBtn) return;
+
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      toggleAboutHelp();
+    });
+
+    closeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeAboutHelp();
+    });
+
+    overlay.addEventListener("click", () => closeAboutHelp());
+
+    // Keyboard shortcuts:
+    // - Esc closes
+    // - ? toggles (Shift+/ on most keyboards)
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        closeAboutHelp();
+        return;
+      }
+      if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
+        // Avoid stealing input focus when typing in text fields
+        const tag = (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName.toLowerCase() : "";
+        const isTyping = (tag === "input" || tag === "textarea" || document.activeElement?.isContentEditable);
+        if (!isTyping) toggleAboutHelp();
+      }
+    });
+  };
+
+  // Auto-install (works whether scripts load before or after DOM is ready)
+  function boot() {
+    try { window.installAboutHelp(); } catch(_) {}
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
+
+/***********************
+ * WWA LIST POPUP (Undocked) - CLEAN (single implementation)
+ * - Opens from #wwaListLink
+ * - Chunked fetch from server: getWwaListChunk(offset, limit)
+ * - Client-side filter over loaded rows
+ ***********************/
+(function(){
+  const POP_ID = "wwaListPopup";
+
+  // Prevent double-install
+  if (window.__wwaListInstalled) return;
+  window.__wwaListInstalled = true;
+
+  const state = {
+    header: [],
+    rows: [],
+    offset: 0,
+    done: false,
+    loading: false,
+    limit: 250
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(msg){
+    const el = $("wwaListPopupStatus");
+    if (el) el.textContent = msg || "";
+  }
+
+  function setCount(n){
+    const el = $("wwaListPopupCount");
+    if (el) el.textContent = String(n || 0);
+  }
+
+  function showPopup(){
+    const pop = $(POP_ID);
+    if (!pop) {
+      console.warn("[WWA List] popup container not found (#" + POP_ID + ")");
+      return;
+    }
+
+    // 🔥 CRITICAL: escape any stacking context by making popup a direct BODY child
+    // (ArcGIS/containers often use transform/filter/backdrop-filter which traps z-index)
+    try {
+      if (pop.parentElement !== document.body) {
+        document.body.appendChild(pop);
+        console.log("[WWA List] popup re-parented to <body>");
+      } else {
+        // still move to end so it paints last
+        document.body.appendChild(pop);
+      }
+    } catch(e){
+      console.warn("[WWA List] could not re-parent popup:", e);
+    }
+
+    // FORCE visibility regardless of CSS issues / stacking contexts
+    pop.style.display = "block";
+    pop.style.position = "fixed";
+    pop.style.left = "80px";
+    pop.style.top = "80px";
+    pop.style.right = "auto";
+    pop.style.bottom = "auto";
+    pop.style.width = "min(980px, calc(100vw - 40px))";
+    pop.style.height = "min(560px, calc(100vh - 160px))";
+
+    // Make it impossible to be "invisible"
+    pop.style.background = "#fff";
+    pop.style.border = "3px solid #ff00aa";     // loud outline
+    pop.style.boxShadow = "0 18px 50px rgba(0,0,0,0.25)";
+    pop.style.zIndex = "2147483647";
+    pop.style.opacity = "1";
+    pop.style.visibility = "visible";
+    pop.style.pointerEvents = "auto";
+
+    // Break out of any inherited transforms/filters from parents
+    pop.style.transform = "none";
+    pop.style.filter = "none";
+    pop.style.backdropFilter = "none";
+    pop.style.isolation = "isolate"; // new stacking context at top-level
+
+    pop.setAttribute("aria-hidden", "false");
+
+    const r = pop.getBoundingClientRect();
+    console.log("[WWA List] popup shown rect:",
+      JSON.stringify({ left:r.left, top:r.top, w:r.width, h:r.height, display:getComputedStyle(pop).display, z:getComputedStyle(pop).zIndex })
+    );
+  }
+
+  function hidePopup(){
+    const pop = $(POP_ID);
+    if (!pop) return;
+    console.log("[WWA List] hidePopup called");
+    pop.style.display = "none";
+    pop.setAttribute("aria-hidden", "true");
+  }
+
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  function renderTable(filterText){
+    const table = $("wwaListPopupTable");
+    const thead = table ? table.querySelector("thead") : null;
+    const tbody = table ? table.querySelector("tbody") : null;
+    if (!thead || !tbody) return;
+
+    const f = (filterText || "").trim().toLowerCase();
+
+    const h = state.header || [];
+    thead.innerHTML = "<tr>" + h.map(x => `<th>${escapeHtml(x || "")}</th>`).join("") + "</tr>";
+
+    const src = state.rows || [];
+    const filtered = (!f)
+      ? src
+      : src.filter(r => r.some(cell => String(cell || "").toLowerCase().includes(f)));
+
+    tbody.innerHTML = filtered.map(r =>
+      "<tr>" + r.map(v => `<td>${escapeHtml(v || "")}</td>`).join("") + "</tr>"
+    ).join("");
+
+    setCount(filtered.length);
+
+    if (state.loading) setStatus("Loading…");
+    else if (state.done) setStatus("All rows loaded");
+    else setStatus(`Loaded ${state.rows.length} (more available)`);
+  }
+
+  function fetchNext(reset){
+    if (state.loading) return;
+    state.loading = true;
+
+    if (reset){
+      state.header = [];
+      state.rows = [];
+      state.offset = 0;
+      state.done = false;
+      setCount(0);
+    }
+
+    setStatus("Loading…");
+
+    google.script.run
+      .withSuccessHandler((res) => {
+        state.loading = false;
+
+        if (!res || res.ok !== true){
+          console.warn("[WWA List] server returned error:", res);
+          setStatus("Server error");
+          return;
+        }
+
+        if (!state.header.length && Array.isArray(res.header)) state.header = res.header;
+
+        if (Array.isArray(res.rows) && res.rows.length){
+          state.rows = state.rows.concat(res.rows);
+        }
+
+        state.offset = Number(res.nextOffset || state.offset || 0);
+        state.done = !!res.done;
+
+        const q = $("wwaListPopupSearch")?.value || "";
+        renderTable(q);
+      })
+      .withFailureHandler((err) => {
+        state.loading = false;
+        console.warn("[WWA List] google.script.run failure:", err);
+        setStatus("Server failure");
+      })
+      .getWwaListChunk(state.offset, state.limit);
+  }
+
+  function openPopup(){
+    showPopup();
+
+    // first open => fetch initial chunk
+    if (!state.rows.length && !state.loading){
+      fetchNext(true);
+    } else {
+      renderTable($("wwaListPopupSearch")?.value || "");
+    }
+    return false;
+  }
+
+  // Global opener for inline link
+  window.__wwaListOpenFromLink = function(ev){
+    try{
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+    }catch(_){}
+    return openPopup();
+  };
+
+  // Dragging (mouse)
+  function makeDraggable(){
+    const pop = $(POP_ID);
+    const hdr = $("wwaListPopupHeader");
+    if (!pop || !hdr) return;
+
+    let dragging = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+    hdr.addEventListener("mousedown", (e) => {
+      dragging = true;
+      const rect = pop.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop  = rect.top;
+
+      pop.style.left = startLeft + "px";
+      pop.style.top  = startTop + "px";
+      pop.style.right = "auto";
+      pop.style.bottom = "auto";
+      pop.style.position = "fixed";
+
+      document.body.style.userSelect = "none";
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      pop.style.left = (startLeft + dx) + "px";
+      pop.style.top  = (startTop + dy) + "px";
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = "";
+    });
+  }
+
+  function wireUi(){
+  // Bulletproof click hook for Apps Script sandbox:
+  // - Delegated (works even if link is rebuilt later)
+  // - Capture-phase (wins even if something else stops bubbling)
+  if (!document.body.dataset.wwalistDelegated){
+    document.body.dataset.wwalistDelegated = "1";
+
+    document.addEventListener("click", (ev) => {
+      const t = ev.target;
+      const hit = t && t.closest && t.closest("#wwaListLink,[data-wwa-list-open='1'],.wwa-list-link");
+      if (!hit) return;
+
+      // You should ALWAYS see this line when clicking the link.
+      console.log("[WWA List] click captured");
+
+      try { ev.preventDefault(); } catch(_){}
+      try { ev.stopPropagation(); } catch(_){}
+
+      // Open popup (and fetch chunk 1 on first open)
+      if (typeof window.__wwaListOpenFromLink === "function"){
+        window.__wwaListOpenFromLink(ev);
+      } else {
+        console.warn("[WWA List] opener missing (__wwaListOpenFromLink not a function)");
+      }
+    }, true); // <-- capture-phase
+  }
+
+    $("wwaListPopupCloseBtn")?.addEventListener("click", hidePopup);
+
+    $("wwaListPopupMinBtn")?.addEventListener("click", () => {
+      const body = $("wwaListPopupBody");
+      if (!body) return;
+      const isHidden = body.style.display === "none";
+      body.style.display = isHidden ? "block" : "none";
+    });
+
+    $("wwaListPopupSearch")?.addEventListener("input", (e) => {
+      renderTable(e.target.value || "");
+    });
+
+    $("wwaListPopupClear")?.addEventListener("click", () => {
+      const s = $("wwaListPopupSearch");
+      if (s) s.value = "";
+      renderTable("");
+    });
+
+    $("wwaListPopupReload")?.addEventListener("click", () => {
+      fetchNext(true);
+    });
+
+    $("wwaListPopupMore")?.addEventListener("click", () => {
+      if (state.done) {
+        setStatus("All rows loaded");
+        return;
+      }
+      fetchNext(false);
+    });
+
+    makeDraggable();
+  }
+
+  if (document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", wireUi);
+  } else {
+    wireUi();
+  }
+})();
+
+
+</script>

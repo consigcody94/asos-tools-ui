@@ -1,0 +1,157 @@
+<script>
+/* Region Footprint overlay (reg.geojson in Drive folder) */
+(function () {
+  const LAYER_ID = "regionFootprintLayer";
+  const TITLE = "Region Footprint";
+
+  const LS_VISIBLE = "regVisible";
+  const LS_OPACITY = "regOpacity";
+
+  function pct(x){ return Math.round(Number(x) * 100) + "%"; }
+
+  function readBool(key, defVal){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null) return defVal;
+      return v === "true";
+    } catch(e){ return defVal; }
+  }
+  function readNum(key, defVal){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null || v === "") return defVal;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : defVal;
+    } catch(e){ return defVal; }
+  }
+
+  function wireControls(layer){
+    const toggle = document.getElementById("regToggle");
+    const op = document.getElementById("regOpacity");
+    const opVal = document.getElementById("regOpacityValue");
+    if (!toggle || !op || !opVal) return;
+
+    const visible = readBool(LS_VISIBLE, false);
+    const opacity = readNum(LS_OPACITY, Number(op.value || 0.75));
+
+    toggle.checked = visible;
+    op.value = String(opacity);
+    opVal.textContent = pct(opacity);
+
+    layer.visible = visible;
+    layer.opacity = opacity;
+
+    toggle.addEventListener("change", () => {
+      const v = !!toggle.checked;
+      layer.visible = v;
+      try { localStorage.setItem(LS_VISIBLE, String(v)); } catch(e){}
+    });
+
+    op.addEventListener("input", () => {
+      const v = Number(op.value);
+      layer.opacity = v;
+      opVal.textContent = pct(v);
+      try { localStorage.setItem(LS_OPACITY, String(v)); } catch(e){}
+    });
+  }
+
+  window.installRegion = function({ map }) {
+    try {
+      const existing = map.findLayerById(LAYER_ID);
+      if (existing) map.remove(existing);
+    } catch(e){}
+
+    require([
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/Polygon",
+      "esri/symbols/SimpleFillSymbol"
+    ], function(GraphicsLayer, Graphic, Polygon, SimpleFillSymbol){
+
+
+      google.script.run
+              .withFailureHandler(function(err){
+                console.error("Region Footprint google.script.run failed:", err);
+              })
+              .withSuccessHandler(function(res){
+          const text = (res && res.ok) ? res.text : (typeof res === "string" ? res : null);
+          if (!text) {
+            console.warn("Region Footprint failed to load:", res && res.error);
+            return;
+          }
+
+          let geo;
+          try { geo = JSON.parse(text); }
+          catch (e) {
+            console.error("Region GeoJSON parse failed:", e);
+            return;
+          }
+
+          const REG_PALETTE = [
+            [0, 120, 200, 22],
+            [200, 80, 0, 22],
+            [0, 160, 60, 22],
+            [160, 0, 140, 22],
+            [120, 120, 0, 22],
+            [60, 60, 200, 22]
+          ];
+
+          const graphics = [];
+          const feats = geo.features || [];
+
+          function addPolygonRings(rings, idx){
+            const sym = new SimpleFillSymbol({
+              color: REG_PALETTE[idx % REG_PALETTE.length],
+              outline: { color: [40, 40, 40, 160], width: 1.5 }
+            });
+            graphics.push(new Graphic({
+              geometry: new Polygon({ rings, spatialReference: { wkid: 4326 } }),
+              symbol: sym,
+              attributes: { __regIdx: idx }
+            }));
+          }
+
+          feats.forEach((f, idx) => {
+            const g = f && f.geometry;
+            if (!g) return;
+
+            if (g.type === "Polygon") {
+              (g.coordinates || []).forEach(ring => addPolygonRings(ring, idx));
+            } else if (g.type === "MultiPolygon") {
+              (g.coordinates || []).forEach(poly => {
+                (poly || []).forEach(ring => addPolygonRings(ring, idx));
+              });
+            } else {
+              console.warn("Region unsupported geometry:", g.type);
+            }
+          });
+
+          const layer = new GraphicsLayer({
+            id: LAYER_ID,
+            title: TITLE,
+            opacity: 0.75,
+            visible: false,
+            listMode: "hide"
+          });
+
+          layer.addMany(graphics);
+          map.add(layer);
+
+          try { map.reorder(layer, 6); } catch(e){}
+
+          wireControls(layer);
+
+
+          // Keep overlays under plotted points (points layer is added later).
+          try { map.reorder(layer, 6); } catch(e){}
+
+          wireControls(layer);
+        })
+        .withFailureHandler(function(err){
+          console.error("getRegGeojsonText failed:", err);
+        })
+        .getRegGeojsonText();
+    });
+  };
+})();
+</script>

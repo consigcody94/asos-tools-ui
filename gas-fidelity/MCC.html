@@ -1,0 +1,160 @@
+<script>
+/* MCC Footprint overlay (mcc.geojson in Drive folder) */
+(function () {
+  const LAYER_ID = "mccFootprintLayer";
+  const TITLE = "MCC Footprint";
+
+  const LS_VISIBLE = "mccVisible";
+  const LS_OPACITY = "mccOpacity";
+
+  function pct(x){ return Math.round(Number(x) * 100) + "%"; }
+
+  function readBool(key, defVal){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null) return defVal;
+      return v === "true";
+    } catch(e){ return defVal; }
+  }
+  function readNum(key, defVal){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null || v === "") return defVal;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : defVal;
+    } catch(e){ return defVal; }
+  }
+
+  function wireControls(layer){
+    const toggle = document.getElementById("mccToggle");
+    const op = document.getElementById("mccOpacity");
+    const opVal = document.getElementById("mccOpacityValue");
+    if (!toggle || !op || !opVal) return;
+
+    // defaults
+    const visible = readBool(LS_VISIBLE, false);
+    const opacity = readNum(LS_OPACITY, Number(op.value || 0.70));
+
+    toggle.checked = visible;
+    op.value = String(opacity);
+    opVal.textContent = pct(opacity);
+
+    layer.visible = visible;
+    layer.opacity = opacity;
+
+    toggle.addEventListener("change", () => {
+      const v = !!toggle.checked;
+      layer.visible = v;
+      try { localStorage.setItem(LS_VISIBLE, String(v)); } catch(e){}
+    });
+
+    op.addEventListener("input", () => {
+      const v = Number(op.value);
+      layer.opacity = v;
+      opVal.textContent = pct(v);
+      try { localStorage.setItem(LS_OPACITY, String(v)); } catch(e){}
+    });
+  }
+
+  window.installMCC = function({ map }) {
+    try {
+      const existing = map.findLayerById(LAYER_ID);
+      if (existing) map.remove(existing);
+    } catch(e){}
+
+    require([
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/Polygon",
+      "esri/symbols/SimpleFillSymbol"
+    ], function(GraphicsLayer, Graphic, Polygon, SimpleFillSymbol){
+
+
+      google.script.run
+              .withFailureHandler(function(err){
+                console.error("MCC Footprint google.script.run failed:", err);
+              })
+              .withSuccessHandler(function(res){
+
+          const text = (res && res.ok) ? res.text : (typeof res === "string" ? res : null);
+          if (!text) {
+            console.warn("MCC Footprint failed to load:", res && res.error);
+            return;
+          }
+
+          let geo;
+          try { geo = JSON.parse(text); }
+          catch (e) {
+            console.error("MCC GeoJSON parse failed:", e);
+            return;
+          }
+
+          // Per-feature palette (each polygon gets a different color)
+          const MCC_PALETTE = [
+            [0, 160, 60, 55],
+            [0, 120, 200, 55],
+            [200, 80, 0, 55],
+            [160, 0, 140, 55],
+            [120, 120, 0, 55],
+            [60, 60, 200, 55],
+            [0, 180, 160, 55],
+            [180, 0, 60, 55]
+          ];
+
+          const graphics = [];
+          const feats = geo.features || [];
+
+          function addPolygon(rings, idx){
+            const sym = new SimpleFillSymbol({
+              color: MCC_PALETTE[idx % MCC_PALETTE.length],
+              outline: { color: [40, 40, 40, 180], width: 1.25 }
+            });
+
+            graphics.push(new Graphic({
+              geometry: new Polygon({ rings, spatialReference: { wkid: 4326 } }),
+              symbol: sym,
+              attributes: { __mccIdx: idx }
+            }));
+          }
+
+          feats.forEach((f, idx) => {
+            const g = f && f.geometry;
+            if (!g) return;
+
+            if (g.type === "Polygon") {
+              (g.coordinates || []).forEach(rings => addPolygon(rings, idx));
+            } else if (g.type === "MultiPolygon") {
+              (g.coordinates || []).forEach(poly => {
+                (poly || []).forEach(rings => addPolygon(rings, idx));
+              });
+            } else {
+              console.warn("MCC unsupported geometry type:", g.type);
+            }
+          });
+
+          const layer = new GraphicsLayer({
+            id: LAYER_ID,
+            title: TITLE,
+            opacity: 0.70,
+            visible: false,
+            listMode: "hide"
+          });
+
+          layer.addMany(graphics);
+          map.add(layer);
+
+          // Keep overlays under plotted points (points layer is added later).
+          // Put above Timezones (which should be lowest overlay).
+          try { map.reorder(layer, 5); } catch(e){}
+
+          wireControls(layer);
+
+        })
+        .withFailureHandler(function(err){
+          console.error("getMccGeojsonText failed:", err);
+        })
+        .getMccGeojsonText();
+    });
+  };
+})();
+</script>

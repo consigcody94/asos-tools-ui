@@ -1,0 +1,260 @@
+<!-- About.html — “About this App / Help” modal (included by Index.html) -->
+
+<style>
+  /* ===== About / Help modal ===== */
+  #aboutHelpOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 9998;
+    display: none;
+  }
+
+  #aboutHelpModal {
+    position: fixed;
+    top: 60px;                /* below header */
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(920px, calc(100vw - 28px));
+    max-height: calc(100vh - 90px);
+    overflow: auto;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.28);
+    z-index: 9999;
+    display: none;
+  }
+
+  #aboutHelpModal .ah-header {
+    position: sticky;
+    top: 0;
+    background: #f7fbff;
+    border-bottom: 1px solid #dbe8f6;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  #aboutHelpModal .ah-title {
+    font-weight: 800;
+    font-size: 15px;
+    color: #073b5f;
+    line-height: 1.2;
+  }
+
+  #aboutHelpModal .ah-close {
+    border: 1px solid #cfe3f4;
+    background: #fff;
+    color: #0b3a5c;
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  #aboutHelpModal .ah-close:hover { background:#eef5fb; }
+
+  #aboutHelpModal .ah-body {
+    padding: 12px 16px 16px 16px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #222;
+  }
+
+  #aboutHelpModal h3 {
+    margin: 12px 0 6px 0;
+    font-size: 13px;
+    color: #0b3a5c;
+  }
+
+  #aboutHelpModal ul { margin: 6px 0 10px 18px; padding: 0; }
+  #aboutHelpModal code { background: #f3f5f7; padding: 1px 4px; border-radius: 4px; }
+  #aboutHelpModal .ah-note {
+    background: #fff7e6;
+    border: 1px solid #ffe2a8;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 10px 0;
+  }
+  #aboutHelpModal .ah-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 14px;
+  }
+  @media (max-width: 760px) {
+    #aboutHelpModal { top: 54px; }
+    #aboutHelpModal .ah-grid { grid-template-columns: 1fr; }
+  }
+
+  /* Optional: a consistent header button look (Help + Menu) */
+  #aboutHelpBtn,
+  #menuBtn {
+    border: 1px solid rgba(255,255,255,0.55);
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border-radius: 8px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-weight: 800;
+    font-size: 12px;
+    line-height: 1;
+
+    /* make <a> look like a button */
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  #aboutHelpBtn:hover,
+  #menuBtn:hover { background: rgba(255,255,255,0.22); }
+</style>
+
+<div id="aboutHelpOverlay" aria-hidden="true"></div>
+
+<div id="aboutHelpModal" role="dialog" aria-modal="true" aria-labelledby="aboutHelpTitle">
+  <div class="ah-header">
+    <div class="ah-title" id="aboutHelpTitle">NWS Systems Status — About / Help</div>
+    <button class="ah-close" id="aboutHelpCloseBtn" type="button">Close (Esc)</button>
+  </div>
+
+  <div class="ah-body">
+    <div class="ah-note">
+      <b>Quick open:</b> click <b>Help</b> in the top-right header, press <b>?</b>, or press <b>Esc</b> to close.
+    </div>
+
+    <h3>What this app shows</h3>
+    <ul>
+      <li>An interactive map of NWS systems/sites with status-driven symbology (Up / Down / Degraded / Patching).</li>
+      <li>A right sidebar with:
+        <ul>
+          <li><b>Legend</b> and program legend</li>
+          <li><b>SID Counter</b> rollups (Type Breakdown)</li>
+          <li><b>Down Sites</b> table (grouped by program)</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>Data refresh & sources</h3>
+<ul>
+  <li><b>Point status information</b> is refreshed every <b>5 minutes</b>.</li>
+  <li><b>System location information</b> is collected from the <b>NWSLI database</b>, <b>NWS Program records</b>, and <b>field records</b>.</li>
+  <li><b>Status information</b> is collected from the <b>USOS database</b>, <b>NWS websites</b>, <b>program</b>, and <b>field input</b>.</li>
+  <li><b>USOS Data</b> is downloaded from the USOS database every <b>30 minutes</b>.</li>
+  <li>Downloaded USOS data can be viewed at:
+    <code>https://script.google.com/a/macros/noaa.gov/s/AKfycbwW4gvMX66vCSn3YIJf2dPfyUgM2A-8YILqva3sqzdCnEHXe6WyqICawJkkvB12VXosaw/exec</code>
+  </li>
+</ul>
+
+<h3>Supplemental program data</h3>
+<ul>
+  <li><b>ASOS</b> — Supplemental ASOS status information is collected every 5 minutes from <b>METARs</b> located at <code>https://tgftp.nws.noaa.gov/data/observations/metar/stations/</code>. If a METAR has not been received from an ASOS in the last 70 minutes the site is flagged as <b>Degraded</b>, after 2 hours the site is flagged as <b>Down</b>. 
+    <code>https://tgftp.nws.noaa.gov/data/observations/metar/stations/</code>
+  </li>
+
+  <li><b>AWIPS</b> — Supplemental AWIPS status information is collected from the <b>AWIPS program status dashboard</b>. The AWIPS status dashboard is connected to this application, and changes are reflected in the application after the next system refresh. Changes include <b>Service Backup</b> and <b>Patching</b> status changes.</li>
+
+  <li><b>Buoys</b> — Supplemental Buoy status information is collected from <b>weather.gov</b> every <b>15 minutes</b>:
+    <code>https://www.ndbc.noaa.gov/data/latest_obs/latest_obs.txt</code> and <code>https://www.ndbc.noaa.gov/data/realtime2/{station}.txt</code> 
+  </li>
+
+  <li><b>Facility</b> — Facility data is supplemented through monitoring <b>NCO WAN status information</b>. The NCO dashboard <code>https://www.nco.ncep.noaa.gov/status/dashboard/?view=sites</code> is connected to this application, and changes are reflected in the application after the next system refresh.</li>
+
+  <li><b>NWR</b> — Supplemental NWR status information is collected from <b>weather.gov</b> every <b>30 minutes</b>:
+    <code>https://www.weather.gov/nwr/outages</code>
+  </li>
+
+  <li><b>RADAR</b> — Supplemental NEXRAD data is collected from the NEXRAD page on <b>Weather.gov</b> every <b>15 minutes</b>:
+    <code>https://www.weather.gov/nl2/NEXRADView</code>
+  </li>
+
+  <li><b>Upper Air</b> — Supplemental Upper Air status information is collected hourly from <b>weather.gov</b>  and <b>Thanks Messages</b> :
+    <code>https://www.weather.gov/upperair/sounding</code> and <code>https://www.nco.ncep.noaa.gov/status/data/thanks/?loc=usa</code> 
+  </li>
+
+<h3>Status meanings</h3>
+
+    <div class="ah-grid">
+      <div>
+        <ul>
+          <li><b>Up</b> — normal/operational</li>
+          <li><b>Down</b> — outage / non-operational</li>
+          <li><b>Degraded</b> — partially impacted or backup-provided impacts</li>
+          <li><b>Patching</b> — in security patching window</li>
+        </ul>
+      </div>
+      <div>
+        <ul>
+          <li><b>Last Updated</b> (header left) shows the client refresh time.</li>
+          <li><b>Refresh Timer</b> (header right) shows the countdown/state of the next refresh.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>Filters (left sidebar)</h3>
+    <ul>
+      <li><b>Filters</b> container includes:
+        <ul>
+          <li><b>Timed Rotation by Program</b> (optional cycling)</li>
+          <li><b>Zoom Map to Feature</b> and <b>Show only Down / Degraded sites</b></li>
+          <li><b>Advanced Search</b> fields (PID/SID/WFO/City/State/Any text)</li>
+          <li><b>Regions</b>, <b>Office Type</b>, and <b>Programs</b> selection</li>
+          <li><b>Reset Filters</b> to return to defaults</li>
+        </ul>
+      </li>
+      <li>Most filter and collapse states are persisted (so the app “remembers” your UI choices).</li>
+    </ul>
+
+    <h3>Map / UI controls</h3>
+    <ul>
+      <li><b>MAP/UI</b> includes basemap selection and a <b>UI Settings</b> subsection:
+        UI font scaling, icon size/font scaling, refresh, and <b>Reset Map &amp; Zoom</b>.
+      </li>
+    </ul>
+
+    <h3>Overlays</h3>
+    <ul>
+      <li>Overlays are managed inside a single collapsible <b>Overlays</b> container (each has a show toggle + opacity).</li>
+      <li>Included overlays in this build:
+        <b>Radar Base Reflectivity</b>, <b>WWA</b>, <b>WFO Footprint</b>, <b>RFC</b>, <b>CWSU</b>, <b>MCC</b>, <b>Region</b>, and <b>Time Zones</b>.
+      </li>
+    </ul>
+
+    <h3>Tips</h3>
+    <ul>
+      <li>Click a site to open the popup (program/site details + outage details when applicable).</li>
+      <li>Use the right sidebar <b>Down Sites</b> grouping chevrons to expand/collapse by program.</li>
+      <li>If something looks stale, try <b>Refresh Data</b> (MAP/UI → UI Settings) and confirm the header’s Last Updated time changes.</li>
+    </ul>
+
+    <ul>
+      <li>The rotation function timer can be changed during operation and will adjust immediatly.</li>
+      <li>The rotation function will rotate through filtered points by program.</li>
+      <li>Selecting a point will open a pop-up box with additional information. The rotation will pause until the pop-up is closed.</li>
+      <li>If the Auto Expand checkbox is selected, the Down Sites Table will synchronize with the program rotation.</li>
+      <li>Change your display to full screen (F11) to hide all the browser toolbars.</li>
+    </ul>
+
+    <h3>Recommended setup</h3>
+    <ul>
+      <li><b>Left Sidebar</b> 
+        <ul>
+          <li>Check the Timed Rotation by Program box</li>
+          <li>Set pause to 5 seconds</li>
+          <li>Check ASOS</li>
+          <li>Check AWIPS</li>
+          <li>Check Facilities</li>
+          <li>Check NWR</li>
+          <li>Check WSR99D</li>
+          <li>Check UA</li>
+          <li>Radar Reflectivity Overlay</li>
+        </ul>
+      </li>
+    </ul>
+
+    <ul>
+      <li><b>Right Sidebar</b> 
+        <ul>
+          <li>Check Auto Expand</li>
+        </ul>
+      </li>
+    </ul>

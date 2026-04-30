@@ -1,0 +1,322 @@
+<script>
+(() => {
+  if (window.installWWA) return; // guard
+
+  // UI IDs (must match Index.html)
+  const TOGGLE_ID = "wwaToggle";
+  const RANGE_ID  = "wwaOpacity";
+  const LABEL_ID  = "wwaOpacityValue";
+  const LEGEND_WRAP_ID   = "wwaLegendContainer";
+  const LEGEND_HEADER_ID = "wwaLegendHeader";
+  const LEGEND_BODY_ID   = "wwaLegendBody";
+  const LEGEND_DIV_ID    = "wwaLegend";
+
+
+  // Badges (optional but recommended)
+  const WWA_BADGE_ID = "wwaFailBadge";
+  const OVERLAYS_BADGE_ID = "overlaysFailBadge";
+
+  // Storage keys (match your app)
+  const KEY_VIS = "wwaVisible";
+  const KEY_OP  = "wwaOpacity";
+  const KEY_LEGEND_COLLAPSED = "wwaLegendCollapsed";
+
+
+  // Primary + fallback URLs
+  const CANDIDATE_URLS = [
+    "https://mapservices.weather.noaa.gov/eventdriven/rest/services/WWA/watch_warn_adv/MapServer",
+    "https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Forecasts_Guidance_Warnings/watch_warn_adv/MapServer"
+  ];
+
+  // Layer identity
+  const LAYER_ID = "wwaLayer";
+  const LAYER_TITLE = "WWA";
+
+  const state = {
+    layer: null,
+    urlIndex: 0,
+    refreshTimer: null
+  };
+
+  function $(id){ return document.getElementById(id); }
+
+  function readBool(key, fallback){
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null || v === undefined) return fallback;
+      // supports "true"/"false" and JSON boolean
+      if (v === "true" || v === "false") return v === "true";
+      return !!JSON.parse(v);
+    } catch(_) { return fallback; }
+  }
+
+  function readNum(key, fallback){
+    try {
+      const v = localStorage.getItem(key);
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : fallback;
+    } catch(_) { return fallback; }
+  }
+
+  function writeBool(key, val){
+    try { localStorage.setItem(key, String(!!val)); } catch(_) {}
+  }
+
+  function writeNum(key, val){
+    try { localStorage.setItem(key, String(val)); } catch(_) {}
+  }
+
+  function clamp01(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function isCorsLikeError(err){
+    const s = String(err?.message || err || "");
+    return (
+      /cors/i.test(s) ||
+      /blocked by/i.test(s) ||
+      /failed to fetch/i.test(s) ||
+      /networkerror/i.test(s) ||
+      /not allowed/i.test(s)
+    );
+  }
+
+  function setBadge(status, message){
+    // status: "ok"|"idle"|"loading"|"cors"|"fail"
+    const b = $(WWA_BADGE_ID);
+    if (b) {
+      if (status === "ok" || status === "idle") {
+        b.style.display = "none";
+      } else {
+        b.style.display = "inline-block";
+        if (status === "loading") b.textContent = "(WWA loading…)";
+        else if (status === "cors") b.textContent = "(WWA blocked by CORS)";
+        else b.textContent = message ? `(WWA failed: ${message})` : "(WWA failed to load)";
+        b.title = message ? String(message) : "";
+      }
+    }
+
+    const ov = $(OVERLAYS_BADGE_ID);
+    if (ov) {
+      if (status === "ok" || status === "idle") {
+        ov.style.display = "none";
+      } else {
+        ov.style.display = "inline-block";
+        ov.textContent = "(Some overlays failed)";
+      }
+    }
+  }
+
+  function updateOpacityLabel(op){
+    const label = $(LABEL_ID);
+    if (label) label.textContent = `${Math.round(op * 100)}%`;
+  }
+
+  function desiredVisible(){
+    const t = $(TOGGLE_ID);
+    if (t) return !!t.checked;
+    return readBool(KEY_VIS, false); // default OFF
+  }
+
+  function desiredOpacity(){
+    const r = $(RANGE_ID);
+    if (r) return clamp01(r.value);
+    return clamp01(readNum(KEY_OP, 0.60));
+  }
+
+  function setLegendVisible(on){
+    const wrap = $(LEGEND_WRAP_ID);
+    if (wrap) wrap.style.display = on ? "block" : "none";
+  }
+
+  function desiredLegendCollapsed(){
+    return readBool(KEY_LEGEND_COLLAPSED, false); // default expanded
+  }
+
+  function setLegendCollapsed(collapsed){
+    const wrap = $(LEGEND_WRAP_ID);
+    const head = $(LEGEND_HEADER_ID);
+    const body = $(LEGEND_BODY_ID);
+
+    if (wrap) wrap.classList.toggle("collapsed", !!collapsed);
+    if (body) body.style.display = collapsed ? "none" : "block";
+    if (head) head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+
+    try { localStorage.setItem(KEY_LEGEND_COLLAPSED, String(!!collapsed)); } catch(_) {}
+  }
+
+  function wireLegendCollapseOnce(){
+    const head = $(LEGEND_HEADER_ID);
+    if (!head || head.dataset.wwaLegendWired === "1") return;
+    head.dataset.wwaLegendWired = "1";
+
+    const toggle = () => setLegendCollapsed(!desiredLegendCollapsed());
+
+    head.addEventListener("click", (e) => { e.preventDefault(); toggle(); });
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+  }
+
+
+  function applyVisibility(){
+    const vis = desiredVisible();
+    writeBool(KEY_VIS, vis);
+
+    if (state.layer) state.layer.visible = vis;
+
+    setLegendVisible(vis);
+
+    // Keep legend collapse state independent of WWA on/off
+    wireLegendCollapseOnce();
+    setLegendCollapsed(desiredLegendCollapsed());
+
+    if (!vis) setBadge("idle");
+  }
+
+
+  function applyOpacity(){
+    const op = desiredOpacity();
+    writeNum(KEY_OP, op);
+    updateOpacityLabel(op);
+    if (state.layer) state.layer.opacity = op;
+  }
+
+  function withTimeout(promise, ms, label){
+    let to;
+    const t = new Promise((_, rej) => {
+      to = setTimeout(() => rej(new Error(label || `Timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, t]).finally(() => clearTimeout(to));
+  }
+
+  window.installWWA = function installWWA({ map, view }) {
+    require([
+      "esri/layers/MapImageLayer",
+      "esri/widgets/Legend"
+    ], (MapImageLayer, Legend) => {
+
+      const $toggle = $(TOGGLE_ID);
+      const $range  = $(RANGE_ID);
+
+      // Init UI from saved state
+      if ($toggle) $toggle.checked = readBool(KEY_VIS, false); // default OFF
+      if ($range)  $range.value = String(readNum(KEY_OP, 0.60));
+      applyOpacity();
+      applyVisibility();
+
+      // ensure header wiring + restore legend collapsed state
+      wireLegendCollapseOnce();
+      setLegendCollapsed(desiredLegendCollapsed());
+
+      // Wire UI once
+      if ($toggle && $toggle.dataset.wwaWired !== "1") {
+        $toggle.dataset.wwaWired = "1";
+        $toggle.addEventListener("change", () => {
+          applyVisibility();
+          if ($toggle.checked) ensureWWA().catch(() => {});
+        });
+      }
+      if ($range && $range.dataset.wwaWired !== "1") {
+        $range.dataset.wwaWired = "1";
+        $range.addEventListener("input", () => applyOpacity());
+        $range.addEventListener("change", () => applyOpacity());
+      }
+
+      // Clean remove
+      function removeExisting(){
+        if (state.layer) {
+          try { map.remove(state.layer); } catch(_) {}
+          state.layer = null;
+        }
+        setLegendVisible(false);
+      }
+
+      async function tryBuild(url){
+        removeExisting();
+
+        const layer = new MapImageLayer({
+          url,
+          id: LAYER_ID,
+          title: LAYER_TITLE,
+          opacity: desiredOpacity(),
+          visible: desiredVisible(),
+          refreshInterval: 2
+        });
+
+        // Add below points
+        try { map.add(layer, Math.min(map.layers.length, 1)); } catch(_) { map.add(layer); }
+
+        // Force real load + a layerView so we know it’s actually drawable
+        await withTimeout(layer.load(), 15000, "WWA service did not respond in time");
+        await withTimeout(view.whenLayerView(layer), 15000, "WWA layerView did not initialize in time");
+
+        // Legend (build once)
+        const legendDiv = $(LEGEND_DIV_ID);
+        if (legendDiv && !window._wwaLegend) {
+          window._wwaLegend = new Legend({
+            view,
+            container: legendDiv,
+            layerInfos: [{ layer, title: "" }]
+          });
+        }
+
+        return layer;
+      }
+
+      async function ensureWWA(){
+        if (!desiredVisible()) { setBadge("idle"); return; }
+
+        setBadge("loading");
+
+        const start = state.urlIndex;
+        let lastErr = null;
+
+        for (let i = 0; i < CANDIDATE_URLS.length; i++) {
+          const idx = (start + i) % CANDIDATE_URLS.length;
+          const url = CANDIDATE_URLS[idx];
+
+          try {
+            const layer = await tryBuild(url);
+            state.layer = layer;
+            state.urlIndex = idx;
+
+            applyOpacity();
+            applyVisibility();
+
+            setBadge("ok");
+            return;
+          } catch (err) {
+            lastErr = err;
+            const msg = String(err?.message || err || "");
+
+            setBadge(isCorsLikeError(err) ? "cors" : "fail", msg);
+            removeExisting();
+
+            console.warn("[WWA] failed candidate:", url, err);
+          }
+        }
+
+        const finalMsg = String(lastErr?.message || lastErr || "Unknown error");
+        setBadge(isCorsLikeError(lastErr) ? "cors" : "fail", finalMsg);
+      }
+
+      // Refresh loop
+      if (state.refreshTimer) clearInterval(state.refreshTimer);
+      state.refreshTimer = setInterval(() => {
+        if (!desiredVisible()) return;
+        if (state.layer) {
+          try { state.layer.refresh(); } catch(_) {}
+        } else {
+          ensureWWA().catch(() => {});
+        }
+      }, 30000);
+
+      // Kick off only if visible
+      if (desiredVisible()) ensureWWA().catch(() => {});
+    });
+  };
+})();
+</script>
