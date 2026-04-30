@@ -18,6 +18,10 @@ MapLibre map view, and active-user heartbeat tracking**.
 
 > 📖 **Step-by-step walkthrough + local-testing-via-clasp:** see
 > [HOWTO.md](./HOWTO.md).
+>
+> 📋 **Formal technical reference (NOAA-style document):** see
+> [NOAA_TECHNICAL_NOTE.md](./NOAA_TECHNICAL_NOTE.md) — author Cody
+> Churchwell · cody.churchwell@noaa.gov.
 
 ## What this replaces
 
