@@ -20,18 +20,20 @@
  *      of a generic "$ flag set" string.
  *
  *    - Long-missing alert tier: every station silent > 14 days
- *      surfaces in the Admin tab and the AI brief. Unbounded list
- *      per SUAD spec.
+ *      surfaces in the Admin tab. Unbounded list per SUAD spec.
  *
  *    - All OWL hazard sources: NWS CAP alerts, AWC SIGMETs +
  *      G-AIRMETs + CWAs, NHC tropical, Tsunami (NTWC + PTWC), NIFC
- *      wildfires, AirNow AQI, NWPS flood gauges, NCEP SDM admin
- *      bulletins, NCEI maintenance window awareness.
+ *      wildfires, USDM drought, EPA AirNow AQI, NWPS flood gauges,
+ *      NCEP SDM admin bulletins, NCEI maintenance window awareness.
  *
- *    - AI Brief generator: structured 12-section operational brief
- *      pulling the full hazard context, with audience / horizon /
- *      length tunables. Brief-to-brief delta tracking surfaces
- *      what changed since the last brief.
+ *    - MapLibre map view embedded in the Index template — CDN-loaded
+ *      MapLibre GL with Esri World Imagery satellite basemap, station
+ *      markers colored by status, click-to-drill popups.
+ *
+ *    - Active-Users heartbeat tracking: every page load logs to a
+ *      sheet so the Admin tab can show concurrent user counts +
+ *      historical activity.
  *
  *  ====================================================================
  *  ZERO-DEPENDENCY DESIGN
@@ -50,15 +52,11 @@
  *    3. Show appsscript.json (Project Settings → toggle), replace its
  *       contents with the appsscript.json that ships with this file.
  *    4. Project Settings → Script Properties. Add:
- *         OPENAI_API_KEY     (Ollama Cloud or OpenAI key)
- *         OPENAI_BASE_URL    (e.g. https://ollama.com/v1)
- *         AI_BRIEF_MODEL     (e.g. glm-5.1 or gpt-4o-mini)
  *         OWL_CONTACT        (email for the NWS UA, e.g. you@noaa.gov)
  *       Optional:
- *         BRIEF_RECIPIENTS   (comma-sep emails, for digestEmail trigger)
- *         AIRNOW_API_KEY     (free key from airnowapi.org)
- *         ASOS_STATIONS      (comma-sep ICAO list to scan; defaults to
- *                             a 920-site nationwide catalog)
+ *         DIGEST_RECIPIENTS  (comma-sep emails for periodic status email)
+ *         AIRNOW_API_KEY     (free key from airnowapi.org — for AQI)
+ *         ASOS_STATIONS      (comma-sep ICAO list; defaults to 30 sites)
  *         ADMIN_EMAILS       (comma-sep emails allowed on /admin)
  *    5. Run installTriggers() once → authorize → done.
  *    6. Deploy → New deployment → Web app, Execute as Me, access
@@ -75,11 +73,12 @@
  *    6. STATE LOG PERSIST    — Per-station 6-hour rolling state log
  *    7. NCEI CROSS-CHECK     — Maintenance-aware second-source
  *    8. HAZARD SOURCES       — CAP / SIGMET / G-AIRMET / CWA / NHC /
- *                              Tsunami / NIFC / AirNow / NWPS / SDM
- *    9. AI BRIEF             — Context aggregator + structured prompt
- *   10. SCAN ORCHESTRATION   — runScan, runHazards, runDigest
+ *                                Tsunami / NIFC / USDM / AirNow / NWPS /
+ *                                NCEP SDM admin bulletins
+ *    9. SCAN ORCHESTRATION   — runScan, runHazards, runDigest (status email)
+ *   10. ACTIVE-USERS         — Heartbeat tracking + concurrent count
  *   11. WEB APP ROUTES       — doGet / doPost + path-style API
- *   12. HTML TEMPLATES       — Index / Admin / About / Status
+ *   12. HTML TEMPLATES       — Index (with MapLibre) / Admin / About
  *   13. TRIGGERS             — install / remove
  *   14. ENTRY POINTS         — onOpen, helper utilities
  ********************************************************************/
@@ -136,11 +135,9 @@ function nceiMaintActive_() {
 /** Cache TTLs (seconds). All read by section 11 (web routes). */
 var CACHE_SCAN_TTL_S    = 300;    // 5 min
 var CACHE_HAZARD_TTL_S  = 300;
-var CACHE_BRIEF_TTL_S   = 600;    // 10 min — briefs are expensive
 
 /** Sheet tab names — auto-created on first run. */
 var TAB_HISTORY      = 'History';
-var TAB_BRIEFS       = 'Briefs';
 var TAB_HEALTH       = 'Health';
 var TAB_STATE_LOG    = 'StateLog';      // per-station rolling state
 var TAB_ACTIVE_USERS = 'ActiveUsers';
@@ -170,6 +167,25 @@ var DEFAULT_ASOS_SHORTLIST = [
   'KPDX','KDEN','KLAS','KPHX','KSAN','KMSP','KDTW','KCLE','KSTL',
   'PANC','PHNL'
 ];
+
+/** Lat/lon for the built-in shortlist. Used by the MapLibre map view
+ *  to plot points without round-tripping each station's coordinates.
+ *  When operators override ASOS_STATIONS with a custom list, they
+ *  also need to provide a Catalog sheet (Col A=ICAO, B=lat, C=lon)
+ *  for the map to render those points. */
+var STATION_COORDS = {
+  KJFK: [40.6398, -73.7787], KLGA: [40.7772, -73.8726], KEWR: [40.6925, -74.1687],
+  KBOS: [42.3656, -71.0096], KDCA: [38.8521, -77.0377], KIAD: [38.9445, -77.4558],
+  KBWI: [39.1754, -76.6683], KPHL: [39.8744, -75.2424], KORD: [41.9786, -87.9048],
+  KMDW: [41.7868, -87.7522], KATL: [33.6407, -84.4277], KMIA: [25.7959, -80.2870],
+  KMCO: [28.4294, -81.3089], KFLL: [26.0726, -80.1527], KCLT: [35.2140, -80.9431],
+  KIAH: [29.9844, -95.3414], KDFW: [32.8998, -97.0403], KLAX: [33.9416, -118.4085],
+  KSFO: [37.6213, -122.3790], KSEA: [47.4502, -122.3088], KPDX: [45.5887, -122.5975],
+  KDEN: [39.8561, -104.6737], KLAS: [36.0840, -115.1537], KPHX: [33.4373, -112.0078],
+  KSAN: [32.7338, -117.1933], KMSP: [44.8848, -93.2223], KDTW: [42.2124, -83.3534],
+  KCLE: [41.4124, -81.8498], KSTL: [38.7487, -90.3700],
+  PANC: [61.1741, -149.9961], PHNL: [21.3187, -157.9224],
+};
 
 function getStationList_() {
   // 1. Explicit Script Property override.
@@ -956,7 +972,171 @@ function fetchAdminBulletin_() {
   };
 }
 
-/** Aggregate every hazard source. Used by hazards endpoint + AI brief. */
+/** US Drought Monitor — weekly nationwide GeoJSON. Each polygon
+ *  carries a DM property (0-4) for severity. We aggregate counts
+ *  per category for the dashboard and pass the full FeatureCollection
+ *  through to the map view for shading. Cached 24 hours since the
+ *  USDM updates once a week. */
+function fetchUsdmCurrent_() {
+  var cache = CacheService.getScriptCache();
+  var raw = cache.get('usdm_v1');
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) { /* fall through */ }
+  }
+  var data = fetchJson_('https://droughtmonitor.unl.edu/data/json/usdm_current.json',
+    { timeoutMs: 25000, retries: 1 });
+  if (!data || !data.features) return null;
+  var counts = { D0: 0, D1: 0, D2: 0, D3: 0, D4: 0 };
+  for (var i = 0; i < data.features.length; i++) {
+    var dm = data.features[i].properties && data.features[i].properties.DM;
+    var k = 'D' + (typeof dm === 'string' ? Number(dm) : dm);
+    if (counts[k] != null) counts[k]++;
+  }
+  var summary = {
+    counts: counts,
+    total_polygons: data.features.length,
+    effective_date: (data.metadata && data.metadata.date) || null,
+  };
+  // Cache only the summary in ScriptCache (the full GeoJSON can be
+  // multi-MB and exceed the 100 KB cap). The map view fetches the
+  // GeoJSON URL directly when it needs the polygons.
+  cache.put('usdm_v1', JSON.stringify(summary), 24 * 3600);
+  return summary;
+}
+
+/** EPA AirNow current AQI for a single (lat, lon). Requires
+ *  AIRNOW_API_KEY Script Property; returns null when unset (so the
+ *  drill panel just doesn't render that section). Free key from
+ *  https://docs.airnowapi.org/. */
+function fetchAirNowAt_(lat, lon, radiusMi) {
+  var key = PROP('AIRNOW_API_KEY', '');
+  if (!key) return null;
+  radiusMi = radiusMi || 25;
+  var url = 'https://www.airnowapi.org/aq/observation/latLong/current/' +
+    '?format=application/json' +
+    '&latitude=' + encodeURIComponent(lat) +
+    '&longitude=' + encodeURIComponent(lon) +
+    '&distance=' + encodeURIComponent(radiusMi) +
+    '&API_KEY=' + encodeURIComponent(key);
+  var data = fetchJson_(url, { timeoutMs: 10000, retries: 1 });
+  if (!Array.isArray(data) || data.length === 0) return null;
+  var params = data.filter(function (r) { return typeof r.AQI === 'number'; })
+    .map(function (r) {
+      return {
+        name: String(r.ParameterName || ''),
+        aqi: Number(r.AQI),
+        category: String((r.Category && r.Category.Name) || 'Unknown'),
+      };
+    });
+  if (!params.length) return null;
+  var worst = params.reduce(function (a, b) { return a.aqi >= b.aqi ? a : b; });
+  return {
+    area: String(data[0].ReportingArea || ''),
+    state: String(data[0].StateCode || ''),
+    aqi: worst.aqi,
+    category: worst.category,
+    dominant_parameter: worst.name,
+    parameters: params,
+  };
+}
+
+/** NOAA NWPS — National Water Prediction Service. Returns the nearest
+ *  forecast-enabled river gauge for a given coordinate, with current
+ *  stage/flow + flood-stage thresholds + 7-day forecast peak.
+ *  Catalog (~10k gauges) cached 24h. */
+function fetchNwpsCatalog_() {
+  var cache = CacheService.getScriptCache();
+  var raw = cache.get('nwps_catalog_v1');
+  if (raw) {
+    try { return JSON.parse(raw); } catch (_) { /* fall through */ }
+  }
+  var data = fetchJson_('https://api.water.noaa.gov/nwps/v1/gauges',
+    { timeoutMs: 30000, retries: 1 });
+  if (!data || !data.gauges) return [];
+  var gauges = data.gauges.map(function (g) {
+    return {
+      lid: String(g.lid || '').toUpperCase(),
+      name: String(g.name || ''),
+      state: String(g.state || ''),
+      lat: Number(g.latitude || 0),
+      lon: Number(g.longitude || 0),
+      waterbody: g.waterbody ? String(g.waterbody) : null,
+    };
+  }).filter(function (g) { return g.lid && isFinite(g.lat); });
+  // Cache as JSON. May exceed 100KB — chunk if needed; for now we
+  // accept that very large catalogs may not cache and re-fetch.
+  try { cache.put('nwps_catalog_v1', JSON.stringify(gauges), 24 * 3600); }
+  catch (_) { /* over 100KB; OK to skip cache */ }
+  return gauges;
+}
+
+function fetchNwpsNearest_(lat, lon, radiusKm) {
+  radiusKm = radiusKm || 75;
+  var catalog = fetchNwpsCatalog_();
+  if (!catalog.length) return null;
+  var best = null, bestKm = Infinity;
+  for (var i = 0; i < catalog.length; i++) {
+    var g = catalog[i];
+    var dLat = (lat - g.lat) * Math.PI / 180;
+    var dLon = (lon - g.lon) * Math.PI / 180 * Math.cos((lat + g.lat) * Math.PI / 360);
+    var d = Math.hypot(dLat, dLon) * 6371;
+    if (d > radiusKm) continue;
+    if (d < bestKm) { best = g; bestKm = d; }
+  }
+  if (!best) return null;
+  // Fetch metadata + stage/flow series in parallel? UrlFetchApp doesn't
+  // do parallel. Sequential is fine — only triggered on drill clicks.
+  var meta = fetchJson_('https://api.water.noaa.gov/nwps/v1/gauges/' + encodeURIComponent(best.lid),
+    { timeoutMs: 10000, retries: 1 });
+  var sf = fetchJson_('https://api.water.noaa.gov/nwps/v1/gauges/' + encodeURIComponent(best.lid) + '/stageflow',
+    { timeoutMs: 10000, retries: 1 });
+  var cat = (meta && meta.flood && meta.flood.categories) || {};
+  var stages = {
+    action_ft:    cat.action    && cat.action.stage    || null,
+    minor_ft:     cat.minor     && cat.minor.stage     || null,
+    moderate_ft:  cat.moderate  && cat.moderate.stage  || null,
+    major_ft:     cat.major     && cat.major.stage     || null,
+  };
+  var obs = (sf && sf.observed && sf.observed.data) || [];
+  var fc  = (sf && sf.forecast && sf.forecast.data) || [];
+  var latestObs = obs.length ? obs[obs.length - 1] : null;
+  // Forecast peak.
+  var peak = null;
+  for (var j = 0; j < fc.length; j++) {
+    if (fc[j].primary == null) continue;
+    if (!peak || fc[j].primary > peak.stage_ft) {
+      peak = { stage_ft: fc[j].primary, timestamp: String(fc[j].validTime || '') };
+    }
+  }
+  function categorize(stage) {
+    if (stage == null) return 'none';
+    if (stages.major_ft != null && stage >= stages.major_ft) return 'major';
+    if (stages.moderate_ft != null && stage >= stages.moderate_ft) return 'moderate';
+    if (stages.minor_ft != null && stage >= stages.minor_ft) return 'minor';
+    if (stages.action_ft != null && stage >= stages.action_ft) return 'action';
+    return 'none';
+  }
+  var maxStage = Math.max(
+    latestObs && latestObs.primary != null ? latestObs.primary : -Infinity,
+    peak ? peak.stage_ft : -Infinity
+  );
+  return {
+    gauge: { lid: best.lid, name: best.name, state: best.state, distance_km: bestKm,
+             waterbody: best.waterbody, lat: best.lat, lon: best.lon },
+    stages: stages,
+    latest: latestObs ? {
+      timestamp: String(latestObs.validTime || ''),
+      stage_ft: latestObs.primary,
+      flow_cfs: latestObs.secondary,
+    } : null,
+    peak_forecast: peak,
+    flood_status: categorize(maxStage),
+    nwps_url: 'https://water.noaa.gov/gauges/' + best.lid,
+  };
+}
+
+/** Aggregate every hazard source. Used by hazards endpoint + the
+ *  status digest email + the dashboard hazard summary. */
 function buildHazardContext_() {
   // Run all the slow fetches; each catches its own errors.
   var capAlerts   = [];
@@ -967,6 +1147,7 @@ function buildHazardContext_() {
   var tsunami     = [];
   var fires       = [];
   var adminMsg    = null;
+  var usdm        = null;
   var stale       = [];
   try { capAlerts = fetchCapAlerts_(); }    catch (e) { stale.push('cap'); }
   try { sigmets   = fetchAwcSigmets_(); }   catch (e) { stale.push('sigmet'); }
@@ -976,6 +1157,7 @@ function buildHazardContext_() {
   try { tsunami   = fetchTsunami_(); }      catch (e) { stale.push('tsunami'); }
   try { fires     = fetchNifcFires_(); }    catch (e) { stale.push('nifc'); }
   try { adminMsg  = fetchAdminBulletin_(); } catch (e) { stale.push('ncep-sdm'); }
+  try { usdm      = fetchUsdmCurrent_(); }  catch (e) { stale.push('usdm'); }
 
   // CAP grouping.
   var byEvent = {};
@@ -1018,275 +1200,84 @@ function buildHazardContext_() {
     wildfires: topFires,
     admin_message: adminMsg ? { issued: adminMsg.issued, preview: adminMsg.preview } : null,
     ncei_maintenance: { active: nceiMaintActive_() },
+    drought: usdm,
     stale_sources: stale,
   };
 }
 
 
 // =====================================================================
-// 9. AI BRIEF
+// 9. ACTIVE-USERS HEARTBEAT
 // =====================================================================
 //
-// Comprehensive context aggregator + structured 12-section prompt.
-// Pulls scan results + hazards + history delta + long-missing list,
-// then produces an operator-ready brief via OpenAI/Ollama-compatible
-// chat. Tunable via audience / horizon / length params.
+// Every page-load fires a heartbeat POST that lands here. We log to
+// two sheets: ActiveUsers (latest row per user, keyed by email) for
+// the "current concurrent users" counter, and UserHistory (append-
+// only) for trend graphs and audit. Idle-out is computed on read:
+// any row whose `last_seen` is > ACTIVE_TIMEOUT_MIN ago counts as
+// inactive.
+//
+// Anonymous heartbeats (no auth) are tagged "anonymous" with the
+// page they hit; that's enough signal for "the dashboard has
+// traffic" without requiring users to sign in.
 
-/** Persists last brief snapshot so we can compute change-deltas. */
-function readLastBriefSnapshot_() {
-  var raw = PropertiesService.getScriptProperties().getProperty('LAST_BRIEF_SNAPSHOT');
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch (_) { return null; }
+var ACTIVE_TIMEOUT_MIN = 5;
+
+function trackActiveUser_(user, page) {
+  user = String(user || 'anonymous').trim().toLowerCase();
+  page = String(page || '').trim();
+  var nowIso = new Date().toISOString();
+  // ActiveUsers: latest-row-per-user upsert.
+  var act = getOrCreateSheet_(TAB_ACTIVE_USERS, ['Email', 'Last Seen UTC', 'Page']);
+  var lastRow = act.getLastRow();
+  var found = false;
+  if (lastRow >= 2) {
+    var emails = act.getRange(2, 1, lastRow - 1, 1).getDisplayValues();
+    for (var i = 0; i < emails.length; i++) {
+      if (String(emails[i][0] || '').trim().toLowerCase() === user) {
+        act.getRange(i + 2, 2, 1, 2).setValues([[nowIso, page]]);
+        found = true;
+        break;
+      }
+    }
+  }
+  if (!found) act.appendRow([user, nowIso, page]);
+  // UserHistory: append-only.
+  var hist = getOrCreateSheet_(TAB_USER_HIST, ['Timestamp UTC', 'Email', 'Page']);
+  hist.appendRow([nowIso, user, page]);
+  // Bound history to ~500 rows.
+  var hl = hist.getLastRow();
+  if (hl > 502) hist.deleteRows(2, hl - 502);
 }
-function writeBriefSnapshot_(snap) {
-  PropertiesService.getScriptProperties().setProperty(
-    'LAST_BRIEF_SNAPSHOT', JSON.stringify(snap)
-  );
-}
 
-/** Build the comprehensive AI Brief context. */
-function buildBriefContext_(focus) {
-  var scan = readScanCache_();
-  var rows = (scan && scan.rows) || [];
-  var counts = { CLEAN: 0, FLAGGED: 0, MISSING: 0, OFFLINE: 0, INTERMITTENT: 0, RECOVERED: 0, 'NO DATA': 0 };
-  for (var i = 0; i < rows.length; i++) counts[rows[i].status] = (counts[rows[i].status] || 0) + 1;
-
-  var ORDER = ['MISSING', 'FLAGGED', 'INTERMITTENT'];
-  var top = rows.filter(function (r) { return ORDER.indexOf(r.status) >= 0; })
-    .sort(function (a, b) {
-      var oa = ORDER.indexOf(a.status), ob = ORDER.indexOf(b.status);
-      if (oa !== ob) return oa - ob;
-      return (a.minutes_since_last_report || 1e9) - (b.minutes_since_last_report || 1e9);
-    });
-  var topProblems = top.slice(0, 20);
-  var intermittent = rows.filter(function (r) { return r.status === 'INTERMITTENT'; }).slice(0, 20);
-
-  var TWO_WEEKS_MIN = 14 * 24 * 60;
-  var longMissing = rows.filter(function (r) {
-    return r.status === 'MISSING' && r.minutes_since_last_report > TWO_WEEKS_MIN;
-  }).sort(function (a, b) {
-    return (b.minutes_since_last_report || 0) - (a.minutes_since_last_report || 0);
+function readActiveUserSummary_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_ACTIVE_USERS);
+  if (!sh || sh.getLastRow() < 2) return { active: 0, unique: 0, rows: [] };
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 3).getValues();
+  var nowMs = Date.now();
+  var threshold = ACTIVE_TIMEOUT_MIN * 60 * 1000;
+  var active = 0;
+  var rows = [];
+  for (var i = 0; i < vals.length; i++) {
+    var email = String(vals[i][0] || '').trim();
+    var seen  = String(vals[i][1] || '').trim();
+    var page  = String(vals[i][2] || '').trim();
+    if (!email) continue;
+    var seenMs = Date.parse(seen) || 0;
+    var minutesAgo = seenMs > 0 ? Math.round((nowMs - seenMs) / 60000) : null;
+    var isActive = seenMs > 0 && (nowMs - seenMs) <= threshold;
+    if (isActive) active++;
+    rows.push({ email: email, last_seen: seen, page: page, minutes_ago: minutesAgo, active: isActive });
+  }
+  rows.sort(function (a, b) {
+    return Date.parse(b.last_seen) - Date.parse(a.last_seen);
   });
-
-  var hazards = buildHazardContext_();
-  var minutesOld = scan && scan.scanned_at
-    ? Math.round((Date.now() - Date.parse(scan.scanned_at)) / 60000)
-    : null;
-
-  return {
-    built_at: new Date().toISOString(),
-    status_counts: counts,
-    total_stations: rows.length,
-    scan_freshness: {
-      scanned_at: scan ? scan.scanned_at : null,
-      duration_ms: scan ? scan.duration_ms : null,
-      minutes_old: minutesOld,
-    },
-    top_problems: topProblems,
-    intermittent_stations: intermittent,
-    long_missing_alert: longMissing.map(function (r) {
-      return {
-        station: r.station,
-        state: r.state,
-        minutes_since_last_report: r.minutes_since_last_report,
-        silence_human: fmtSilence_(r.minutes_since_last_report),
-        last_valid: r.last_valid,
-        probable_reason: r.probable_reason,
-      };
-    }),
-    hazards: hazards,
-    focus: focus || null,
-  };
-}
-
-/** Compute diff vs last brief — newly problem, recovered, count deltas. */
-function computeBriefDelta_(ctx) {
-  var prev = readLastBriefSnapshot_();
-  var curProblems = {};
-  for (var i = 0; i < ctx.top_problems.length; i++) curProblems[ctx.top_problems[i].station] = true;
-
-  var delta = null;
-  if (prev) {
-    var newly = [], recovered = [];
-    for (var s in curProblems) if (!prev.problems[s]) newly.push(s);
-    for (var p in prev.problems) if (!curProblems[p]) recovered.push(p);
-    var cd = {};
-    for (var k in ctx.status_counts) {
-      cd[k] = (ctx.status_counts[k] || 0) - (prev.counts[k] || 0);
-    }
-    delta = { newly_problem: newly, recovered: recovered, count_delta: cd };
-  }
-  writeBriefSnapshot_({ counts: ctx.status_counts, problems: curProblems });
-  return delta;
-}
-
-function buildBriefSystemPrompt_(audience, horizon, length) {
-  var aud = {
-    noc: 'You are an ASOS NOC shift briefer. Audience: 24/7 ops engineers. Use ICAO IDs verbatim, terse operational language, specific action items.',
-    'field-tech': 'You are an ASOS field-maintenance dispatch briefer. Emphasize sensor codes (PWINO, FZRANO, RVRNO), priority by impact + accessibility, ticket-ready summaries.',
-    management: 'You are an ASOS Network executive summary writer. Audience: non-technical management. Translate ICAO to airport names; describe operational impact in plain English.',
-    aviation: 'You are an aviation weather briefer. Audience: airline dispatch + ATC flow management. Emphasize SIGMETs, G-AIRMETs, CWAs, airports affected by station outages.',
-  }[audience] || aud.noc;
-  var hz = {
-    now: 'Time horizon: current state. Describe what is happening now.',
-    '6h': 'Time horizon: next 6 hours. Project trajectory based on current patterns — which stations likely escalate, which hazards likely clear.',
-    '24h': 'Time horizon: next 24 hours. Identify systemic risks (incoming tropical activity, multi-day outages worth scheduling field response).',
-  }[horizon] || hz.now;
-  var ln = {
-    summary: 'Length: 4-6 sentences total. Hit only the most-critical items. Skip empty sections.',
-    standard: 'Length: 1-2 paragraphs per section, only including sections with non-trivial data. Skip empty sections.',
-    detailed: 'Length: full structured brief, all sections present (note "no active items" in empty ones).',
-  }[length] || ln.standard;
-
-  return [
-    'Respond in English only.',
-    aud, hz, ln,
-    '',
-    'Use these section headers (all-caps): EXECUTIVE SUMMARY · NETWORK HEALTH · URGENT (STATIONS UNDER ACTIVE WEATHER) · INTERMITTENT (FLAPPING) · TOP PROBLEM STATIONS · AVIATION HAZARDS · ACTIVE ALERTS · TROPICAL · WILDFIRES & TSUNAMI · DELTA SINCE LAST BRIEF · DATA FRESHNESS · TICKETS TO OPEN.',
-    'Use ICAO IDs verbatim. Cite specific stations and reasons.',
-    'Never invent data not present in the context.',
-    'EVERY long-missing-alert station (silent > 14 days) MUST appear in URGENT.',
-    'TICKETS TO OPEN: each line is one actionable ticket.',
-  ].join('\n');
-}
-
-function buildBriefUserMessage_(ctx, delta) {
-  var blocks = [];
-  blocks.push('META: scan_age_min=' + (ctx.scan_freshness.minutes_old || '?') +
-    ', total_stations=' + ctx.total_stations +
-    ', focus=' + (ctx.focus || 'all'));
-  blocks.push('STATUS_COUNTS: ' + JSON.stringify(ctx.status_counts));
-
-  if (ctx.top_problems.length > 0) {
-    var tps = ['TOP_PROBLEMS:'];
-    for (var i = 0; i < ctx.top_problems.length; i++) {
-      var p = ctx.top_problems[i];
-      tps.push('  ' + p.station + ' ' + p.status + ' ' + (p.minutes_since_last_report || '?') + 'min ' + (p.probable_reason || ''));
-    }
-    blocks.push(tps.join('\n'));
-  }
-  if (ctx.intermittent_stations.length > 0) {
-    var iss = ['INTERMITTENT_STATIONS (SUAD-spec — flapping):'];
-    for (var j = 0; j < ctx.intermittent_stations.length; j++) {
-      var s = ctx.intermittent_stations[j];
-      iss.push('  ' + s.station + ' last=' + (s.minutes_since_last_report || '?') + 'min');
-    }
-    blocks.push(iss.join('\n'));
-  }
-  if (ctx.long_missing_alert.length > 0) {
-    var lm = ['LONG_MISSING_ALERT (silent > 14 days — every entry MUST appear in URGENT):'];
-    for (var l = 0; l < ctx.long_missing_alert.length; l++) {
-      var x = ctx.long_missing_alert[l];
-      lm.push('  ' + x.station + ' silent=' + x.silence_human + ' last_valid=' + (x.last_valid || '?'));
-    }
-    blocks.push(lm.join('\n'));
-  }
-  if (ctx.hazards.cap_alerts.total > 0) {
-    var capLines = ['ACTIVE_ALERTS: ' + ctx.hazards.cap_alerts.total + ' total · by event:'];
-    for (var c = 0; c < ctx.hazards.cap_alerts.by_event.length; c++) {
-      var e = ctx.hazards.cap_alerts.by_event[c];
-      capLines.push('  ' + e.event + ' (' + e.severity + '): ' + e.count);
-    }
-    blocks.push(capLines.join('\n'));
-  }
-  if (ctx.hazards.aviation.sigmet_count + ctx.hazards.aviation.gairmet_count + ctx.hazards.aviation.cwa_count > 0) {
-    blocks.push('AVIATION_HAZARDS: ' + ctx.hazards.aviation.sigmet_count + ' SIGMETs, ' +
-      ctx.hazards.aviation.gairmet_count + ' G-AIRMETs, ' + ctx.hazards.aviation.cwa_count + ' CWAs');
-  }
-  if (ctx.hazards.tropical_storms.length > 0) {
-    var ts = ['TROPICAL_STORMS:'];
-    for (var t = 0; t < ctx.hazards.tropical_storms.length; t++) {
-      var st = ctx.hazards.tropical_storms[t];
-      ts.push('  ' + st.name + ' ' + st.classification + ' ' + st.intensity_kt + 'kt ' + st.pressure_mb + 'mb ' + st.movement);
-    }
-    blocks.push(ts.join('\n'));
-  }
-  if (ctx.hazards.tsunami.length > 0) {
-    var tsu = ['TSUNAMI_BULLETINS:'];
-    for (var u = 0; u < ctx.hazards.tsunami.length; u++) {
-      var b = ctx.hazards.tsunami[u];
-      tsu.push('  ' + b.center + ' ' + b.level.toUpperCase() + ': ' + b.title);
-    }
-    blocks.push(tsu.join('\n'));
-  }
-  if (ctx.hazards.wildfires.length > 0) {
-    var wf = ['WILDFIRES (top by acres):'];
-    for (var w = 0; w < ctx.hazards.wildfires.length; w++) {
-      var f = ctx.hazards.wildfires[w];
-      wf.push('  ' + f.name + ' ' + f.state + ' acres=' + (f.acres || '?') + ' contain=' + (f.containment_pct || '?') + '%');
-    }
-    blocks.push(wf.join('\n'));
-  }
-  if (ctx.hazards.admin_message) {
-    blocks.push('NCEP_SDM_ADMIN: issued=' + ctx.hazards.admin_message.issued + '\n  ' + ctx.hazards.admin_message.preview);
-  }
-  if (ctx.hazards.ncei_maintenance.active) {
-    blocks.push('NCEI_MAINTENANCE_ACTIVE');
-  }
-  if (delta) {
-    var dStr = [];
-    for (var dk in delta.count_delta) {
-      if (delta.count_delta[dk] !== 0) dStr.push(dk + (delta.count_delta[dk] > 0 ? '+' : '') + delta.count_delta[dk]);
-    }
-    blocks.push('DELTA_SINCE_LAST: newly_problem=[' + delta.newly_problem.slice(0, 12).join(',') +
-      '] recovered=[' + delta.recovered.slice(0, 12).join(',') + '] counts={' + dStr.join(', ') + '}');
-  }
-  if (ctx.hazards.stale_sources.length > 0) {
-    blocks.push('STALE_SOURCES: ' + ctx.hazards.stale_sources.join(', '));
-  }
-  return blocks.join('\n\n');
-}
-
-/** OpenAI/Ollama chat — returns the assistant's text. */
-function openaiChat_(messages, options) {
-  var key = PROP('OPENAI_API_KEY', '');
-  var base = PROP('OPENAI_BASE_URL', 'https://ollama.com/v1');
-  var model = PROP('AI_BRIEF_MODEL', 'glm-5.1');
-  if (!key) return '[AI Brief unavailable — set OPENAI_API_KEY in Script Properties.]';
-
-  var url = base.replace(/\/+$/, '') + '/chat/completions';
-  var body = {
-    model: model,
-    messages: messages,
-    max_tokens: (options && options.maxTokens) || 4000,
-    temperature: 0.2,
-  };
-  var resp = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'Authorization': 'Bearer ' + key },
-    payload: JSON.stringify(body),
-    muteHttpExceptions: true,
-  });
-  if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) {
-    Logger.log('[ai-brief] HTTP ' + resp.getResponseCode() + ': ' + resp.getContentText().slice(0, 400));
-    return '[AI Brief failed — HTTP ' + resp.getResponseCode() + '. Check OPENAI_API_KEY / OPENAI_BASE_URL / AI_BRIEF_MODEL.]';
-  }
-  try {
-    var j = JSON.parse(resp.getContentText());
-    var msg = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-    return msg || '[AI Brief returned empty content.]';
-  } catch (e) {
-    return '[AI Brief parse failed: ' + e.message + ']';
-  }
-}
-
-function generateAiBrief_(opts) {
-  opts = opts || {};
-  var ctx = buildBriefContext_(opts.focus);
-  var delta = opts.compareToLast === false ? null : computeBriefDelta_(ctx);
-  var sys = buildBriefSystemPrompt_(opts.audience || 'noc', opts.horizon || 'now', opts.length || 'standard');
-  var usr = buildBriefUserMessage_(ctx, delta);
-  var text = openaiChat_(
-    [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-    { maxTokens: 4000 }
-  );
-  return { text: text, context: ctx, delta: delta };
+  return { active: active, unique: rows.length, rows: rows };
 }
 
 
 // =====================================================================
-// 10. SCAN ORCHESTRATION
+// 10. SCAN ORCHESTRATION (renumbered after AI Brief removal)
 // =====================================================================
 
 /** Read cached scan from Script Cache + Sheet snapshot. */
@@ -1382,21 +1373,91 @@ function runHazards() {
   return ctx;
 }
 
-/** Email digest with the AI brief — fired by the digestEmail trigger. */
+/** Periodic status digest — plain-text status summary. Triggered every
+ *  4 hours; only sends mail when DIGEST_RECIPIENTS is set. No AI; pure
+ *  data emitted from the live scan + hazard cache. */
 function runDigest() {
-  var recipients = PROP('BRIEF_RECIPIENTS', '');
+  var recipients = PROP('DIGEST_RECIPIENTS', '');
   if (!recipients) {
-    Logger.log('[digest] BRIEF_RECIPIENTS not set; skipping email');
+    Logger.log('[digest] DIGEST_RECIPIENTS not set; skipping email');
     return;
   }
-  var brief = generateAiBrief_({});
-  var subject = 'OWL Network Brief — ' + new Date().toUTCString();
+  var scan = readScanCache_();
+  var hazards = buildHazardContext_();
+  var lines = [];
+  lines.push('OWL × NWS Systems Status — periodic digest');
+  lines.push('Generated: ' + new Date().toUTCString());
+  lines.push('');
+  if (scan && scan.counts) {
+    lines.push('STATUS COUNTS (' + scan.total + ' stations · scan age ' +
+      Math.round((Date.now() - Date.parse(scan.scanned_at)) / 60000) + ' min):');
+    var keys = ['CLEAN', 'FLAGGED', 'INTERMITTENT', 'MISSING', 'OFFLINE', 'RECOVERED'];
+    for (var i = 0; i < keys.length; i++) {
+      lines.push('  ' + keys[i] + ': ' + (scan.counts[keys[i]] || 0));
+    }
+    lines.push('');
+    // Top problems.
+    var ORDER = { MISSING: 0, FLAGGED: 1, INTERMITTENT: 2 };
+    var top = (scan.rows || []).filter(function (r) { return r.status in ORDER; })
+      .sort(function (a, b) {
+        if (ORDER[a.status] !== ORDER[b.status]) return ORDER[a.status] - ORDER[b.status];
+        return (a.minutes_since_last_report || 1e9) - (b.minutes_since_last_report || 1e9);
+      }).slice(0, 12);
+    if (top.length) {
+      lines.push('TOP PROBLEM STATIONS:');
+      for (var j = 0; j < top.length; j++) {
+        lines.push('  ' + top[j].station + ' ' + top[j].status + '  silent ' +
+          fmtSilence_(top[j].minutes_since_last_report) + '  ' + (top[j].probable_reason || ''));
+      }
+      lines.push('');
+    }
+    // Long-missing alert.
+    var TWO_W = 14 * 24 * 60;
+    var lm = (scan.rows || []).filter(function (r) {
+      return r.status === 'MISSING' && r.minutes_since_last_report > TWO_W;
+    }).sort(function (a, b) {
+      return (b.minutes_since_last_report || 0) - (a.minutes_since_last_report || 0);
+    });
+    if (lm.length) {
+      lines.push('LONG-MISSING ALERT (silent > 14 days — every entry):');
+      for (var k = 0; k < lm.length; k++) {
+        lines.push('  ' + lm[k].station + '  silent ' + fmtSilence_(lm[k].minutes_since_last_report) +
+          '  last_valid=' + (lm[k].last_valid || '?'));
+      }
+      lines.push('');
+    }
+  }
+  // Hazard summary.
+  lines.push('ACTIVE HAZARDS:');
+  lines.push('  CAP alerts:  ' + ((hazards.cap_alerts && hazards.cap_alerts.total) || 0));
+  lines.push('  SIGMETs:     ' + ((hazards.aviation && hazards.aviation.sigmet_count) || 0));
+  lines.push('  G-AIRMETs:   ' + ((hazards.aviation && hazards.aviation.gairmet_count) || 0));
+  lines.push('  CWAs:        ' + ((hazards.aviation && hazards.aviation.cwa_count) || 0));
+  lines.push('  Tropical:    ' + ((hazards.tropical_storms && hazards.tropical_storms.length) || 0));
+  lines.push('  Tsunami:     ' + ((hazards.tsunami && hazards.tsunami.length) || 0));
+  lines.push('  Wildfires:   ' + ((hazards.wildfires && hazards.wildfires.length) || 0));
+  if (hazards.admin_message) {
+    lines.push('');
+    lines.push('NCEP SDM ADMIN BULLETIN (issued ' + hazards.admin_message.issued + '):');
+    lines.push('  ' + hazards.admin_message.preview);
+  }
+  if (hazards.ncei_maintenance && hazards.ncei_maintenance.active) {
+    lines.push('');
+    lines.push('⚠ NCEI MAINTENANCE WINDOW ACTIVE');
+  }
+  if (hazards.stale_sources && hazards.stale_sources.length) {
+    lines.push('');
+    lines.push('Stale sources: ' + hazards.stale_sources.join(', '));
+  }
+  lines.push('');
+  lines.push('--');
+  lines.push('Generated by OWL × Apps Script · ' + ScriptApp.getService().getUrl());
   MailApp.sendEmail({
     to: recipients,
-    subject: subject,
-    body: brief.text + '\n\n--\nGenerated by OWL × Apps Script · ' + brief.context.built_at,
+    subject: 'OWL Status Digest — ' + new Date().toUTCString(),
+    body: lines.join('\n'),
   });
-  appendBriefRow_(brief);
+  appendHistory_('digest', { recipients: recipients });
 }
 
 /** History append — bounded to 500 rows so the tab doesn't grow unbounded. */
@@ -1410,16 +1471,6 @@ function appendHistory_(eventType, data) {
   }
 }
 
-function appendBriefRow_(brief) {
-  var sh = getOrCreateSheet_(TAB_BRIEFS, ['Timestamp UTC', 'Audience', 'Length', 'Stale Sources', 'Brief Text']);
-  sh.appendRow([
-    new Date().toISOString(),
-    'noc',
-    'standard',
-    (brief.context.hazards.stale_sources || []).join(','),
-    brief.text,
-  ]);
-}
 
 
 // =====================================================================
@@ -1434,9 +1485,9 @@ function appendBriefRow_(brief) {
 //   ?api=health    → JSON health
 //   ?api=scan      → JSON scan results
 //   ?api=hazards   → JSON aggregated hazards
-//   ?api=brief     → JSON AI brief (POST or GET)
 //   ?api=missing   → JSON missing-stations buckets
 //   ?api=intermittent → JSON SUAD-spec intermittent list
+//   ?api=heartbeat → POST per page load (Active Users tracking)
 
 function doGet(e) {
   e = e || {};
@@ -1469,10 +1520,11 @@ function doGet(e) {
 function doPost(e) {
   e = e || {};
   var p = (e.parameter || {});
-  if (p.api === 'brief') {
+  if (p.api === 'heartbeat') {
     var body = {};
     try { body = JSON.parse(e.postData && e.postData.contents || '{}'); } catch (_) {}
-    return jsonResponse_(generateAiBrief_(body));
+    trackActiveUser_(body.user || 'anonymous', body.page || '');
+    return jsonResponse_({ ok: true });
   }
   // Default: same as doGet's API path handler.
   return apiResponse_(p.api || 'health', p);
@@ -1499,20 +1551,31 @@ function apiResponse_(path, p) {
     }
     return jsonResponse_(buildHazardContext_());
   }
-  if (path === 'brief') {
-    var opts = {
-      focus: p.focus || '',
-      audience: p.audience || 'noc',
-      horizon: p.horizon || 'now',
-      length: p.length || 'standard',
-    };
-    return jsonResponse_(generateAiBrief_(opts));
-  }
   if (path === 'missing') {
     return jsonResponse_(buildMissingBuckets_());
   }
   if (path === 'intermittent') {
     return jsonResponse_(buildIntermittentList_());
+  }
+  if (path === 'users') {
+    return jsonResponse_(readActiveUserSummary_());
+  }
+  if (path === 'usdm') {
+    return jsonResponse_(fetchUsdmCurrent_() || { warming: true });
+  }
+  if (path === 'airnow') {
+    var lat = Number(p.lat || ''), lon = Number(p.lon || '');
+    if (!isFinite(lat) || !isFinite(lon)) {
+      return jsonResponse_({ error: 'lat and lon required' });
+    }
+    return jsonResponse_(fetchAirNowAt_(lat, lon, Number(p.radius_mi || 25)) || { warming: true });
+  }
+  if (path === 'nwps') {
+    var nlat = Number(p.lat || ''), nlon = Number(p.lon || '');
+    if (!isFinite(nlat) || !isFinite(nlon)) {
+      return jsonResponse_({ error: 'lat and lon required' });
+    }
+    return jsonResponse_(fetchNwpsNearest_(nlat, nlon, Number(p.radius_km || 75)) || { warming: true });
   }
   return jsonResponse_({ error: 'unknown api path: ' + path }, 404);
 }
@@ -1591,17 +1654,29 @@ function buildIntermittentList_() {
 // JS string constants — single-file deploy, no include() machinery.
 
 /** Renders the per-page wrapper: shared head + content. */
-function renderShell_(title, body) {
+function renderShell_(title, body, opts) {
+  opts = opts || {};
   var webappUrl = ScriptApp.getService().getUrl() || '';
-  return [
+  var head = [
     '<!doctype html>',
     '<html><head>',
     '<meta charset="utf-8" />',
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     '<base target="_top">',
     '<title>' + title + '</title>',
-    '<style>' + INLINE_CSS + '</style>',
-    '</head><body>',
+  ];
+  // Conditionally pull MapLibre's CSS+JS from a CDN. Apps Script's
+  // CSP allows external scripts inside HtmlService output as long as
+  // they don't try to access Google Apps Script API directly. The
+  // MapLibre bundle is ~250 KB gzipped and renders on a canvas,
+  // which Apps Script's iframe sandbox supports cleanly.
+  if (opts.includeMap) {
+    head.push('<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />');
+    head.push('<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>');
+  }
+  head.push('<style>' + INLINE_CSS + '</style>');
+  head.push('</head><body>');
+  return head.concat([
     '<header class="hdr">',
     '  <div class="hdr-l"><span class="hdr-mark">●</span> OWL × NWS Systems Status</div>',
     '  <nav class="hdr-nav">',
@@ -1617,10 +1692,19 @@ function renderShell_(title, body) {
     '<script>window.OWL_WEBAPP_URL = ' + JSON.stringify(webappUrl) + ';</script>',
     '<script>' + INLINE_JS + '</script>',
     '</body></html>',
-  ].join('\n');
+  ]).join('\n');
 }
 
 function renderIndexHtml_() {
+  // Embed the live station catalog (id + lat/lon) so the client-side
+  // MapLibre layer can plot points without an extra round-trip.
+  var stations = getStationList_();
+  var catalogJs = JSON.stringify(stations.map(function (id) {
+    var lat = STATION_COORDS[id] && STATION_COORDS[id][0];
+    var lon = STATION_COORDS[id] && STATION_COORDS[id][1];
+    return { id: id, lat: lat, lon: lon };
+  }).filter(function (s) { return s.lat != null && s.lon != null; }));
+
   var body = [
     '<section class="dashboard">',
     '  <div class="counter-strip">',
@@ -1632,6 +1716,13 @@ function renderIndexHtml_() {
     '    <div class="counter recovered"><label>RECOVERED</label><span id="cnt-recovered">—</span></div>',
     '  </div>',
     '  <div class="freshness" id="freshness">scan freshness: …</div>',
+    '  <section class="card"><h2>Map</h2>',
+    '    <div class="map-controls">',
+    '      <label><input type="checkbox" id="basemap-toggle"> Satellite (Esri World Imagery)</label>',
+    '      <span class="muted" id="map-stats"></span>',
+    '    </div>',
+    '    <div id="map" class="maplibre-map"></div>',
+    '  </section>',
     '  <div class="grid-2">',
     '    <section class="card"><h2>Top Problem Stations</h2><div id="top-problems" class="scroll">loading…</div></section>',
     '    <section class="card"><h2>INTERMITTENT (SUAD-spec)</h2><div id="intermittent-list" class="scroll">loading…</div></section>',
@@ -1640,19 +1731,10 @@ function renderIndexHtml_() {
     '    <section class="card"><h2>Long Missing (>2 weeks)</h2><div id="long-missing" class="scroll">loading…</div></section>',
     '    <section class="card"><h2>Active Hazards</h2><div id="hazard-summary" class="scroll">loading…</div></section>',
     '  </div>',
-    '  <section class="card brief-card">',
-    '    <h2>AI Brief</h2>',
-    '    <div class="brief-controls">',
-    '      <label>Audience <select id="brief-audience"><option value="noc">NOC</option><option value="field-tech">Field Tech</option><option value="management">Management</option><option value="aviation">Aviation</option></select></label>',
-    '      <label>Horizon <select id="brief-horizon"><option value="now">Now</option><option value="6h">6 h</option><option value="24h">24 h</option></select></label>',
-    '      <label>Length <select id="brief-length"><option value="standard">Standard</option><option value="summary">Summary</option><option value="detailed">Detailed</option></select></label>',
-    '      <button id="brief-generate">Generate Brief</button>',
-    '    </div>',
-    '    <pre id="brief-output" class="brief-output">Click Generate Brief to produce a fresh operational summary.</pre>',
-    '  </section>',
     '</section>',
+    '<script>window.OWL_STATION_CATALOG = ' + catalogJs + ';</script>',
   ].join('\n');
-  return renderShell_('OWL Status — Map', body);
+  return renderShell_('OWL Status — Map', body, { includeMap: true });
 }
 
 function renderAdminHtml_() {
@@ -1671,6 +1753,8 @@ function renderAdminHtml_() {
     '  <section class="card"><h2>FLAGGED — by sensor code</h2><div id="admin-flagged" class="scroll-tall">loading…</div></section>',
     '  <section class="card"><h2>Hazard Summary</h2><div id="admin-hazards" class="scroll-tall">loading…</div></section>',
     '  <section class="card"><h2>NCEP SDM Admin Bulletin</h2><div id="admin-sdm">loading…</div></section>',
+    '  <section class="card"><h2>Active Users</h2><div id="admin-users">loading…</div></section>',
+    '  <section class="card"><h2>US Drought Monitor</h2><div id="admin-usdm">loading…</div></section>',
     '  <section class="card"><h2>Sources Health</h2><div id="admin-sources">loading…</div></section>',
     '</section>',
   ].join('\n');
@@ -1683,9 +1767,8 @@ function renderAboutHtml_() {
     '<h1>OWL × NWS Systems Status — About</h1>',
     '<p>Single-file Google Apps Script that replaces a multi-file System Outage Map ' +
       'project with live API data sources, the SUAD-spec INTERMITTENT classifier, ' +
-      'comprehensive hazard aggregation (CAP / SIGMET / G-AIRMET / CWA / NHC / Tsunami / ' +
-      'NIFC / NCEP SDM / NCEI maintenance state), and an AI-generated 12-section ' +
-      'shift-change brief.</p>',
+      'and comprehensive hazard aggregation (CAP / SIGMET / G-AIRMET / CWA / NHC / ' +
+      'Tsunami / NIFC / USDM / AirNow / NWPS / NCEP SDM / NCEI maintenance state).</p>',
     '<h2>Data Sources</h2>',
     '<ul class="sources">',
     '  <li><strong>IEM</strong> · primary METAR fetch (Iowa State Mesonet — academic mirror of NCEI)</li>',
@@ -1696,7 +1779,9 @@ function renderAboutHtml_() {
     '  <li><strong>NHC</strong> · active tropical storms</li>',
     '  <li><strong>Tsunami.gov</strong> · NTWC + PTWC bulletins</li>',
     '  <li><strong>NIFC WFIGS</strong> · active US wildfires (ArcGIS)</li>',
-    '  <li><strong>OpenAI/Ollama-compatible</strong> · AI Brief generation</li>',
+    '  <li><strong>EPA AirNow</strong> · AQI when AIRNOW_API_KEY is set</li>',
+    '  <li><strong>USDM</strong> · weekly drought severity GeoJSON</li>',
+    '  <li><strong>NWPS</strong> · river gauges + flood stage forecasts</li>',
     '</ul>',
     '<h2>Status Definitions</h2>',
     '<dl class="defs">',
@@ -1756,14 +1841,14 @@ var INLINE_CSS = [
   '.pill.RECOVERED{background:rgba(95,168,230,.20);color:var(--info)}',
   '.pill.alert{background:rgba(226,92,107,.45);color:#fff;animation:pulse 1.4s infinite}',
   '@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}',
-  '.brief-card{background:linear-gradient(180deg,var(--surface),var(--surface-2));}',
-  '.brief-controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px}',
-  '.brief-controls label{display:flex;flex-direction:column;font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-dim)}',
-  '.brief-controls select,.brief-controls button{margin-top:4px;padding:6px 10px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:.78rem}',
-  '.brief-controls button{background:var(--accent-strong);color:#fff;cursor:pointer;font-weight:700;border:0}',
-  '.brief-controls button:hover{filter:brightness(1.1)}',
-  '.brief-output{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:.78rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;min-height:120px;color:var(--fg);}',
   '.muted{color:var(--fg-dim);font-size:.85em}',
+  '.maplibre-map{width:100%;height:480px;border-radius:6px;border:1px solid var(--border);background:var(--bg)}',
+  '.map-controls{display:flex;align-items:center;gap:14px;margin-bottom:8px;font-size:.78rem}',
+  '.map-controls label{display:flex;align-items:center;gap:6px}',
+  '.maplibregl-popup{font-family:inherit !important}',
+  '.maplibregl-popup-content{background:var(--surface) !important;color:var(--fg) !important;border:1px solid var(--border);font-size:.72rem;padding:10px 14px !important}',
+  '.maplibregl-popup-tip{border-top-color:var(--surface) !important;border-bottom-color:var(--surface) !important}',
+  '.admin-pre{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:.78rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;color:var(--fg)}',
   '.about dl.defs dt{font-weight:700;color:var(--accent);margin-top:8px}',
   '.about dl.defs dd{margin:0 0 8px 0;color:var(--fg-dim)}',
   '.about ul.sources li{padding:3px 0;color:var(--fg-dim)}',
@@ -1771,8 +1856,8 @@ var INLINE_CSS = [
 ].join('\n');
 
 /** Inline JS — runs on every page. Polls /api/* paths to populate
- *  the counters / problem lists / hazard summary. AI Brief click
- *  POSTs to ?api=brief and renders the response.
+ *  the counters / problem lists / hazard summary, posts a heartbeat
+ *  per page load, and (on the Index template) wires up MapLibre.
  *
  *  Uses standard fetch() with the web-app URL passed in as
  *  window.OWL_WEBAPP_URL — safe regardless of where the page is
@@ -1785,6 +1870,17 @@ var INLINE_JS = [
   '  var u = url;',
   '  return fetch(u, opts).then(function(r){ return r.json(); });',
   '};',
+  '// XSS-safe HTML helpers — esc() escapes any string before',
+  '// concatenating into innerHTML; setSafe() applies HTML built only',
+  '// from already-escaped fragments.',
+  'function esc(s) {',
+  '  if (s == null) return "";',
+  '  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\'/g, "&#39;");',
+  '}',
+  'function setSafe(id, html) {',
+  '  var el = document.getElementById(id);',
+  '  if (el) el.innerHTML = html;',
+  '}',
   '',
   '// Counter strip + freshness ----------------------------------',
   'function updateScan() {',
@@ -1881,28 +1977,6 @@ var INLINE_JS = [
   '  });',
   '}',
   '',
-  '// AI Brief generator -----------------------------------------',
-  'function generateBrief() {',
-  '  var btn = document.getElementById("brief-generate");',
-  '  var out = document.getElementById("brief-output");',
-  '  var aud = document.getElementById("brief-audience").value;',
-  '  var hz  = document.getElementById("brief-horizon").value;',
-  '  var ln  = document.getElementById("brief-length").value;',
-  '  if (btn) btn.disabled = true;',
-  '  if (out) out.textContent = "Generating brief… (typically 5-15 seconds)";',
-  '  fetch(BASE+"?api=brief", {',
-  '    method: "POST",',
-  '    headers: {"Content-Type":"application/json"},',
-  '    body: JSON.stringify({audience: aud, horizon: hz, length: ln})',
-  '  }).then(function(r){ return r.json(); }).then(function(d){',
-  '    if (out) out.textContent = (d && d.text) || "[No brief content returned.]";',
-  '  }).catch(function(e){',
-  '    if (out) out.textContent = "Error generating brief: " + (e && e.message || e);',
-  '  }).finally(function(){',
-  '    if (btn) btn.disabled = false;',
-  '  });',
-  '}',
-  '',
   '// Admin page renderer ----------------------------------------',
   'function renderAdmin() {',
   '  fetchJson(BASE+"?api=scan").then(function(s){',
@@ -1941,19 +2015,48 @@ var INLINE_JS = [
   '  });',
   '  fetchJson(BASE+"?api=hazards").then(function(h){',
   '    var html = "";',
-  '    if (h.cap_alerts) html += "<p><strong>CAP alerts:</strong> "+h.cap_alerts.total+"</p>";',
-  '    if (h.aviation) html += "<p><strong>Aviation:</strong> "+h.aviation.sigmet_count+" SIGMETs · "+h.aviation.gairmet_count+" G-AIRMETs · "+h.aviation.cwa_count+" CWAs</p>";',
+  '    if (h.cap_alerts) html += "<p><strong>CAP alerts:</strong> "+(h.cap_alerts.total|0)+"</p>";',
+  '    if (h.aviation) html += "<p><strong>Aviation:</strong> "+(h.aviation.sigmet_count|0)+" SIGMETs · "+(h.aviation.gairmet_count|0)+" G-AIRMETs · "+(h.aviation.cwa_count|0)+" CWAs</p>";',
   '    if (h.tropical_storms) html += "<p><strong>Tropical:</strong> "+h.tropical_storms.length+"</p>";',
   '    if (h.tsunami) html += "<p><strong>Tsunami:</strong> "+h.tsunami.length+"</p>";',
   '    if (h.wildfires) html += "<p><strong>Wildfires:</strong> "+h.wildfires.length+"</p>";',
-  '    document.getElementById("admin-hazards").innerHTML = html || "<p class=muted>None.</p>";',
-  '    document.getElementById("admin-sdm").innerHTML = h.admin_message',
-  '      ? "<p>Issued "+h.admin_message.issued+"</p><pre class=brief-output>"+h.admin_message.preview+"</pre>"',
-  '      : "<p class=muted>No active NCEP SDM bulletin.</p>";',
+  '    setSafe("admin-hazards", html || "<p class=muted>None.</p>");',
+  '    if (h.admin_message) {',
+  '      var sdmHtml = "<p>Issued " + esc(h.admin_message.issued) + "</p><pre class=admin-pre>" + esc(h.admin_message.preview) + "</pre>";',
+  '      setSafe("admin-sdm", sdmHtml);',
+  '    } else {',
+  '      setSafe("admin-sdm", "<p class=muted>No active NCEP SDM bulletin.</p>");',
+  '    }',
+  '    if (h.drought) {',
+  '      var c = h.drought.counts || {};',
+  '      var dHtml = "<p>Effective: " + esc(h.drought.effective_date || "?") +',
+  '        " · Total polygons: " + (h.drought.total_polygons|0) + "</p>" +',
+  '        "<table class=sites><tr><th>Cat</th><th>Polygons</th></tr>" +',
+  '        ["D0","D1","D2","D3","D4"].map(function(k){',
+  '          return "<tr><td>"+k+"</td><td>"+(c[k]|0)+"</td></tr>";',
+  '        }).join("") + "</table>";',
+  '      setSafe("admin-usdm", dHtml);',
+  '    } else {',
+  '      setSafe("admin-usdm", "<p class=muted>USDM data not available.</p>");',
+  '    }',
   '    var stale = h.stale_sources && h.stale_sources.length',
-  '      ? "<p class=muted>Stale: "+h.stale_sources.join(", ")+"</p>"',
+  '      ? "<p class=muted>Stale: "+ esc(h.stale_sources.join(", ")) +"</p>"',
   '      : "<p>All sources fresh.</p>";',
-  '    document.getElementById("admin-sources").innerHTML = stale;',
+  '    setSafe("admin-sources", stale);',
+  '  });',
+  '  fetchJson(BASE+"?api=users").then(function(u){',
+  '    var html = "<p><strong>Active now:</strong> "+(u.active|0)+" · <strong>Unique seen:</strong> "+(u.unique|0)+"</p>";',
+  '    if (u.rows && u.rows.length) {',
+  '      html += "<table class=sites><tr><th>User</th><th>Last Seen</th><th>Page</th><th>Active</th></tr>";',
+  '      u.rows.slice(0, 30).forEach(function(r){',
+  '        html += "<tr><td>" + esc(r.email) + "</td><td>" +',
+  '          (r.minutes_ago!=null ? (r.minutes_ago|0)+"m ago" : "—") + "</td><td><code>" +',
+  '          esc(r.page||"") + "</code></td><td>" +',
+  '          (r.active ? "<span class=\\"pill CLEAN\\">YES</span>" : "<span class=muted>idle</span>") + "</td></tr>";',
+  '      });',
+  '      html += "</table>";',
+  '    }',
+  '    setSafe("admin-users", html);',
   '  });',
   '}',
   'function adminMissingTable(rows, withAlert) {',
@@ -1967,8 +2070,130 @@ var INLINE_JS = [
   '  return html.join("");',
   '}',
   '',
+  '// Heartbeat — log this page-view so Admin can show concurrent users -',
+  'function heartbeat() {',
+  '  // Apps Script anonymous web apps don\'t expose viewer email to JS.',
+  '  // We tag with a stable per-browser id stored in localStorage so the',
+  '  // active-user count reflects unique browsers without requiring',
+  '  // sign-in. Pages that need real identity should hit Apps Script with',
+  '  // a token mechanism layered on top.',
+  '  var id;',
+  '  try {',
+  '    id = localStorage.getItem("owl_browser_id");',
+  '    if (!id) {',
+  '      id = "anon-" + Math.random().toString(36).slice(2, 10) + "-" + Date.now().toString(36);',
+  '      localStorage.setItem("owl_browser_id", id);',
+  '    }',
+  '  } catch (_) { id = "anon-" + Date.now(); }',
+  '  fetch(BASE + "?api=heartbeat", {',
+  '    method: "POST",',
+  '    headers: {"Content-Type": "application/json"},',
+  '    body: JSON.stringify({ user: id, page: window.location.pathname + window.location.search }),',
+  '  }).catch(function(){ /* ignore — heartbeat is fire-and-forget */ });',
+  '}',
+  '',
+  '// MapLibre map view ------------------------------------------',
+  'var MAP_STATUS_COLORS = {',
+  '  CLEAN: "#3fb27f", FLAGGED: "#e0a73a", INTERMITTENT: "#c48828",',
+  '  MISSING: "#e25c6b", OFFLINE: "#475569", RECOVERED: "#5fa8e6",',
+  '  "NO DATA": "#5f6f8f"',
+  '};',
+  'var owlMap = null;',
+  'function initMap() {',
+  '  var el = document.getElementById("map");',
+  '  if (!el || !window.maplibregl) return;',
+  '  owlMap = new maplibregl.Map({',
+  '    container: "map",',
+  '    style: {',
+  '      version: 8,',
+  '      sources: {',
+  '        basemap: { type: "raster", tileSize: 256,',
+  '          tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",',
+  '                  "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",',
+  '                  "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],',
+  '          attribution: "© OpenStreetMap · CARTO" }',
+  '      },',
+  '      layers: [{ id: "basemap", type: "raster", source: "basemap" }]',
+  '    },',
+  '    center: [-97, 38], zoom: 3.5,',
+  '  });',
+  '  owlMap.on("load", function () {',
+  '    owlMap.addSource("stations", { type: "geojson", data: stationsToGeoJSON([]) });',
+  '    owlMap.addLayer({',
+  '      id: "stations-layer", type: "circle", source: "stations",',
+  '      paint: {',
+  '        "circle-radius": 6, "circle-color": ["get", "color"],',
+  '        "circle-stroke-color": "#0b1220", "circle-stroke-width": 1,',
+  '        "circle-opacity": 0.92',
+  '      }',
+  '    });',
+  '    owlMap.on("click", "stations-layer", function (e) {',
+  '      var f = e.features && e.features[0];',
+  '      if (!f) return;',
+  '      var p = f.properties || {};',
+  '      var html = "<strong>" + p.station + "</strong><br>" +',
+  '        "<span style=\\"color:" + (p.color || "#888") + "\\">" + (p.status || "—") + "</span><br>" +',
+  '        (p.reason ? "<small>" + p.reason + "</small><br>" : "") +',
+  '        (p.silent != null ? "<small>silent " + p.silent + "m</small>" : "");',
+  '      new maplibregl.Popup({offset:8}).setLngLat(f.geometry.coordinates).setHTML(html).addTo(owlMap);',
+  '    });',
+  '    owlMap.on("mouseenter", "stations-layer", function () { owlMap.getCanvas().style.cursor = "pointer"; });',
+  '    owlMap.on("mouseleave", "stations-layer", function () { owlMap.getCanvas().style.cursor = ""; });',
+  '  });',
+  '  // Basemap toggle.',
+  '  var tgl = document.getElementById("basemap-toggle");',
+  '  if (tgl) tgl.addEventListener("change", function (e) {',
+  '    if (!owlMap) return;',
+  '    var src = owlMap.getSource("basemap");',
+  '    if (src && src.setTiles) {',
+  '      src.setTiles(e.target.checked',
+  '        ? ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]',
+  '        : ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",',
+  '           "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",',
+  '           "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"]);',
+  '    }',
+  '  });',
+  '}',
+  'function stationsToGeoJSON(rows) {',
+  '  var byId = {};',
+  '  for (var i = 0; i < rows.length; i++) byId[rows[i].station] = rows[i];',
+  '  var catalog = window.OWL_STATION_CATALOG || [];',
+  '  return {',
+  '    type: "FeatureCollection",',
+  '    features: catalog.map(function (s) {',
+  '      var r = byId[s.id] || {};',
+  '      var color = MAP_STATUS_COLORS[r.status] || MAP_STATUS_COLORS["NO DATA"];',
+  '      return {',
+  '        type: "Feature",',
+  '        geometry: { type: "Point", coordinates: [s.lon, s.lat] },',
+  '        properties: {',
+  '          station: s.id,',
+  '          status: r.status || "NO DATA",',
+  '          color: color,',
+  '          reason: r.probable_reason || "",',
+  '          silent: r.minutes_since_last_report,',
+  '        }',
+  '      };',
+  '    })',
+  '  };',
+  '}',
+  'function refreshMapPoints(scan) {',
+  '  if (!owlMap || !owlMap.isStyleLoaded()) {',
+  '    setTimeout(function(){ refreshMapPoints(scan); }, 500); return;',
+  '  }',
+  '  var src = owlMap.getSource("stations");',
+  '  if (src) src.setData(stationsToGeoJSON(scan.rows || []));',
+  '  var stats = document.getElementById("map-stats");',
+  '  if (stats) {',
+  '    var catalog = window.OWL_STATION_CATALOG || [];',
+  '    stats.textContent = catalog.length + " stations on map · " + (scan.total || 0) + " classified";',
+  '  }',
+  '}',
+  '',
   '// Boot --------------------------------------------------------',
   'function boot() {',
+  '  heartbeat();',
+  '  setInterval(heartbeat, 4 * 60 * 1000);',  // refresh every 4 min so 5-min idle window stays warm
   '  var path = window.location.search;',
   '  var isAdmin = /[?&](path|page)=admin/.test(path);',
   '  if (isAdmin) {',
@@ -1976,14 +2201,35 @@ var INLINE_JS = [
   '    setInterval(renderAdmin, 60000);',
   '    return;',
   '  }',
-  '  var brief = document.getElementById("brief-generate");',
-  '  if (brief) brief.addEventListener("click", generateBrief);',
   '  if (document.getElementById("cnt-clean")) {',
   '    updateScan();',
   '    renderIntermittent();',
   '    renderLongMissing();',
   '    renderHazards();',
-  '    setInterval(updateScan, 60000);',
+  '    if (document.getElementById("map") && window.maplibregl) {',
+  '      initMap();',
+  '      // Refresh map markers on each scan poll.',
+  '      var origUpdate = updateScan;',
+  '      window.updateScan = function () {',
+  '        return fetchJson(BASE+"?api=scan").then(function(s){',
+  '          if (!s || !s.counts) return;',
+  '          var ids = ["clean","flagged","intermittent","missing","offline","recovered"];',
+  '          ids.forEach(function(id){',
+  '            var el = document.getElementById("cnt-"+id);',
+  '            if (el) el.textContent = (s.counts[id.toUpperCase()] || 0).toLocaleString();',
+  '          });',
+  '          var fresh = document.getElementById("freshness");',
+  '          if (fresh) {',
+  '            var min = s.scanned_at ? Math.round((Date.now() - new Date(s.scanned_at).getTime())/60000) : null;',
+  '            fresh.textContent = "scan freshness: " + (min!=null ? (min + " min ago · " + s.total + " stations · " + (s.duration_ms||"?") + "ms") : "warming…");',
+  '          }',
+  '          renderTopProblems(s);',
+  '          refreshMapPoints(s);',
+  '        });',
+  '      };',
+  '      window.updateScan();',
+  '    }',
+  '    setInterval(function(){ (window.updateScan || updateScan)(); }, 60000);',
   '    setInterval(renderHazards, 120000);',
   '  }',
   '}',
@@ -2016,9 +2262,9 @@ function rotateLogs() {
   var sh = getOrCreateSheet_(TAB_HISTORY, ['Timestamp UTC', 'Event', 'JSON']);
   var lastRow = sh.getLastRow();
   if (lastRow > 502) sh.deleteRows(2, lastRow - 502);
-  // Trim Briefs similarly.
-  var bsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_BRIEFS);
-  if (bsh && bsh.getLastRow() > 102) bsh.deleteRows(2, bsh.getLastRow() - 102);
+  // Trim ActiveUsers history similarly.
+  var ush = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB_USER_HIST);
+  if (ush && ush.getLastRow() > 502) ush.deleteRows(2, ush.getLastRow() - 502);
 }
 
 
@@ -2033,7 +2279,7 @@ function onOpen() {
       .createMenu('OWL Status')
       .addItem('Run Scan Now', 'runScan')
       .addItem('Refresh Hazards', 'runHazards')
-      .addItem('Send AI Brief Email', 'runDigest')
+      .addItem('Send Status Digest Email', 'runDigest')
       .addSeparator()
       .addItem('Install Triggers', 'installTriggers')
       .addItem('Remove Triggers', 'removeTriggers')
@@ -2058,8 +2304,8 @@ function testHealth() {
     stations: getStationList_().length,
     ncei_maintenance: nceiMaintActive_(),
     ua: userAgent_(),
-    have_openai_key: !!PROP('OPENAI_API_KEY', ''),
     have_airnow_key: !!PROP('AIRNOW_API_KEY', ''),
+    digest_recipients: PROP('DIGEST_RECIPIENTS', '(unset)'),
   }, null, 2));
 }
 function testScan() {
@@ -2079,8 +2325,4 @@ function testHazards() {
     sdm: !!h.admin_message,
     stale: h.stale_sources,
   }, null, 2));
-}
-function testBrief() {
-  var b = generateAiBrief_({ audience: 'noc', horizon: 'now', length: 'standard' });
-  Logger.log(b.text);
 }
