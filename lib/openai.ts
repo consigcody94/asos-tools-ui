@@ -64,6 +64,10 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
   if (azure) delete body.model;
 
   const t0 = Date.now();
+  // Default 45 s wall-clock so the AI Brief can't hang the route. The
+  // caller can pass a longer signal explicitly if it really wants.
+  const ctrl = opts.signal ? null : new AbortController();
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), 45_000) : null;
   try {
     const r = await fetch(url, {
       method: "POST",
@@ -72,7 +76,7 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
         ...(azure ? { "api-key": AZURE_KEY } : { Authorization: `Bearer ${OPENAI_KEY}` }),
       },
       body: JSON.stringify(body),
-      signal: opts.signal,
+      signal: opts.signal ?? ctrl!.signal,
     });
     const dt = Date.now() - t0;
     trackMetric("owl.ai.chat.latency_ms", dt);
@@ -89,5 +93,7 @@ export async function chat(messages: ChatMsg[], opts: ChatOpts = {}): Promise<st
   } catch (e) {
     trackException(e);
     return "AI Brief failed — see Application Insights for details.";
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

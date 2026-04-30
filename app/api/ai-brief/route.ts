@@ -118,7 +118,7 @@ export async function POST(req: Request) {
       { role: "system", content: sysPrompt },
       { role: "user", content: userMsg },
     ],
-    { maxTokens: 3000, reasoningEffort: "low" },
+    { maxTokens: 1200, reasoningEffort: "low" },
   );
 
   const dt = Date.now() - t0;
